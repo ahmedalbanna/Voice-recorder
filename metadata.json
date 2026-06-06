@@ -1,0 +1,6 @@
+{
+  "name": "صدى",
+  "description": "تطبيق مسجل صوتي عربي ذكي بواجهات تصميمة متطورة تدعم اتجاه اليمين لليسار (RTL) مع محرك تسجيل متقدم وعرض حي للموجات الصوتية.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">صدى</string>
+    <string name="recording_state_idle">اضغط على الزر للبدء</string>
+    <string name="recording_state_recording">جاري تسجيل الصوت...</string>
+    <string name="recording_state_paused">تم إيقاف التسجيل مؤقتاً</string>
+    <string name="permission_title">مطلوب إذن الميكروفون</string>
+    <string name="permission_desc">نحتاج إلى إذن استخدام الميكروفون لالتقاط وتسجيل الصوت.</string>
+    <string name="permission_button">منح الإذن</string>
+    <string name="no_recordings">لا توجد تسجيلات بعد. ابدأ بتسجيل فكرتك الأولى!</string>
+    <string name="delete_title">حذف التسجيل</string>
+    <string name="delete_confirm">هل أنت متأكد من رغبتك في حذف هذا التسجيل؟ لا يمكن التراجع عن هذا الإجراء.</string>
+    <string name="delete_button">حذف</string>
+    <string name="cancel_button">إلغاء</string>
+    <string name="rename_title">إعادة تسمية التسجيل</string>
+    <string name="rename_placeholder">اسم التسجيل الجديد</string>
+    <string name="rename_button">تأكيد</string>
+    <string name="record_btn_desc">زر تسجيل الصوت</string>
+    <string name="play_btn_desc">تشغيل الصوت</string>
+    <string name="pause_btn_desc">إيقاف مؤقت</string>
+    <string name="delete_btn_desc">حذف الملف</string>
+    <string name="rename_btn_desc">تعديل الاسم</string>
+    <string name="share_btn_desc">مشاركة التسجيل</string>
+    <string name="recording_prefix">تسجيل_</string>
+</resources>
