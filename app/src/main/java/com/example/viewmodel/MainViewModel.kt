@@ -1,9 +1,16 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.media.MediaMetadataRetriever
+import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -11,6 +18,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.audio.AudioPlayer
 import com.example.audio.AudioRecorder
 import com.example.model.RecordingItem
+import com.example.service.RecordingService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -18,12 +26,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.abs
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -36,6 +48,146 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val recordingsDir = File(context.filesDir, "recordings").apply {
         if (!exists()) {
             mkdirs()
+        }
+    }
+
+    // Audio focus (1.1)
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var wasPlayingBeforeTransientLoss = false
+    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                // Permanent loss: stop playback/recording
+                if (_isPlaying.value) {
+                    viewModelScope.launch { stopPlaying() }
+                    _operationError.value = "توقف التشغيل — فقدان تركيز الصوت"
+                }
+                if (_isRecording.value) {
+                    stopRecording()
+                    _operationError.value = "توقف التسجيل — مقاطعة صوتية"
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                if (_isPlaying.value) {
+                    wasPlayingBeforeTransientLoss = true
+                    audioPlayer.pause()
+                    _isPlaying.value = false
+                    playbackProgressJob?.cancel()
+                    updateListWithPlaybackState()
+                } else {
+                    wasPlayingBeforeTransientLoss = false
+                }
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                if (wasPlayingBeforeTransientLoss && !_isPlaying.value && _currentlyPlayingFile.value != null) {
+                    audioPlayer.resume()
+                    _isPlaying.value = true
+                    wasPlayingBeforeTransientLoss = false
+                    startPlaybackProgressTimer()
+                    updateListWithPlaybackState()
+                }
+            }
+        }
+    }
+
+    private fun requestAudioFocusForRecording(): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(attrs)
+                    .setOnAudioFocusChangeListener(audioFocusListener)
+                    .build()
+                audioManager.requestAudioFocus(audioFocusRequest!!) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(
+                    audioFocusListener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            }
+        } catch (e: Exception) {
+            Log.w("MainViewModel", "requestAudioFocusForRecording failed", e)
+            true // don't block recording on focus failure
+        }
+    }
+
+    private fun requestAudioFocusForPlayback(): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+                audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(attrs)
+                    .setOnAudioFocusChangeListener(audioFocusListener)
+                    .build()
+                audioManager.requestAudioFocus(audioFocusRequest!!) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(
+                    audioFocusListener,
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN
+                ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            }
+        } catch (e: Exception) {
+            Log.w("MainViewModel", "requestAudioFocusForPlayback failed", e)
+            true
+        }
+    }
+
+    private fun abandonAudioFocus() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+                audioFocusRequest = null
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.abandonAudioFocus(audioFocusListener)
+            }
+        } catch (e: Exception) {
+            Log.w("MainViewModel", "abandonAudioFocus failed", e)
+        }
+    }
+
+    // Becoming noisy receiver (1.1) — pause on headphone unplug
+    private val becomingNoisyReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, intent: Intent?) {
+            if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY && _isPlaying.value) {
+                audioPlayer.pause()
+                _isPlaying.value = false
+                playbackProgressJob?.cancel()
+                playbackProgressJob = null
+                updateListWithPlaybackState()
+            }
+        }
+    }
+    private var noisyReceiverRegistered = false
+    private fun registerNoisyReceiver() {
+        if (!noisyReceiverRegistered) {
+            try {
+                context.registerReceiver(becomingNoisyReceiver, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY))
+                noisyReceiverRegistered = true
+            } catch (e: Exception) {
+                Log.w("MainViewModel", "registerNoisyReceiver failed", e)
+            }
+        }
+    }
+    private fun unregisterNoisyReceiver() {
+        if (noisyReceiverRegistered) {
+            try {
+                context.unregisterReceiver(becomingNoisyReceiver)
+            } catch (e: Exception) {
+                // ignore
+            }
+            noisyReceiverRegistered = false
         }
     }
 
@@ -72,9 +224,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var recordingTimerJob: Job? = null
     private var recordingVisualizerJob: Job? = null
     private var playbackProgressJob: Job? = null
+    private var playbackStartElapsedMs: Long = 0L
+    private var playbackStartPosMs: Int = 0
 
     // Temp file used for active recording
     private var activeRecordingFile: File? = null
+    private var recordingStartElapsedMs: Long = 0L
 
     // Operation feedback for UI (Snackbar) — null when idle
     private val _operationError = MutableStateFlow<String?>(null)
@@ -86,6 +241,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         loadRecordings()
+        registerNoisyReceiver()
     }
 
     fun loadRecordings() {
@@ -122,7 +278,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            val dateString = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("ar")).format(Date(file.lastModified()))
+            val dateString = try {
+                val formatter = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale("ar"))
+                Instant.ofEpochMilli(file.lastModified()).atZone(ZoneId.systemDefault()).format(formatter)
+            } catch (e: Exception) {
+                // Fallback for desugaring edge
+                java.text.SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("ar")).format(java.util.Date(file.lastModified()))
+            }
 
             RecordingItem(
                 file = file,
@@ -140,7 +302,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Stop any playing audio before starting recording
         stopPlaying()
 
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+        // Audio focus for recording (1.1)
+        requestAudioFocusForRecording()
+
+        val timestamp = try {
+            val fmt = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss", Locale.getDefault())
+            LocalDateTime.now().format(fmt)
+        } catch (e: Exception) {
+            java.text.SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(java.util.Date())
+        }
         // In Arabic strings, prefix has been defined as "تسجيل_" (or Recording_)
         val outputName = "تسجيل_$timestamp.m4a"
         val file = File(recordingsDir, outputName)
@@ -151,27 +321,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _isRecording.value = true
             _recordingDurationSeconds.value = 0
             _amplitudes.value = emptyList()
+            recordingStartElapsedMs = SystemClock.elapsedRealtime()
 
-            // Timer Job
-            recordingTimerJob = viewModelScope.launch(Dispatchers.Default) {
-                while (audioRecorder.isRecording()) {
-                    delay(1000)
-                    _recordingDurationSeconds.value += 1
+            // Foreground service to survive backgrounding (1.1)
+            try {
+                RecordingService.start(context)
+            } catch (e: Exception) {
+                Log.w("MainViewModel", "Failed to start RecordingService", e)
+            }
+
+            // Timer Job — elapsedRealtime base (1.3) with permission-revocation guard (1.1)
+            recordingTimerJob = viewModelScope.launch {
+                while (isActive && audioRecorder.isRecording()) {
+                    delay(250)
+                    // Revocation check: stop cleanly if RECORD_AUDIO revoked mid-recording
+                    if (androidx.core.content.ContextCompat.checkSelfPermission(
+                            context, android.Manifest.permission.RECORD_AUDIO
+                        ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                    ) {
+                        stopRecording()
+                        _operationError.value = "تم إيقاف التسجيل — تم إلغاء إذن الميكروفون"
+                        break
+                    }
+                    val elapsed = ((SystemClock.elapsedRealtime() - recordingStartElapsedMs) / 1000).toInt().coerceAtLeast(0)
+                    _recordingDurationSeconds.value = elapsed
                 }
             }
 
-            // Waveform Amplitude Visualizer Job
+            // Waveform Amplitude Visualizer Job — silence → 0f (1.3)
             recordingVisualizerJob = viewModelScope.launch(Dispatchers.Default) {
                 while (audioRecorder.isRecording()) {
                     delay(70)
                     val amp = audioRecorder.getMaxAmplitude()
-                    // Normalize amplitude to scale between 0.0f and 1.0f for visualizer
                     val maxNorm = 32767f
-                    val normalized = (amp / maxNorm).coerceIn(0.02f, 1.0f)
-                    
+                    val normalized = (amp / maxNorm).coerceIn(0f, 1f)
+
                     _amplitudes.update { current ->
                         val updated = current.toMutableList()
-                        if (updated.size > 80) { // Limit number of lines in drawing
+                        if (updated.size > 80) {
                             updated.removeAt(0)
                         }
                         updated.add(normalized)
@@ -179,6 +366,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
+        } else {
+            abandonAudioFocus()
         }
     }
 
@@ -187,11 +376,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         audioRecorder.stop()
         _isRecording.value = false
+        recordingStartElapsedMs = 0L
 
         recordingTimerJob?.cancel()
         recordingTimerJob = null
         recordingVisualizerJob?.cancel()
         recordingVisualizerJob = null
+
+        // Stop foreground service and abandon focus (1.1)
+        try {
+            RecordingService.stop(context)
+        } catch (e: Exception) {
+            Log.w("MainViewModel", "Failed to stop RecordingService", e)
+        }
+        abandonAudioFocus()
 
         loadRecordings()
     }
@@ -203,18 +401,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (_isPlaying.value) {
                 audioPlayer.pause()
                 _isPlaying.value = false
+                playbackProgressJob?.cancel()
+                playbackProgressJob = null
+                // Keep focus but allow transient loss handling
             } else {
+                // Resume: re-request focus
+                if (!requestAudioFocusForPlayback()) {
+                    _operationError.value = "تعذر استئناف التشغيل — فقدان تركيز الصوت"
+                    return
+                }
                 audioPlayer.resume()
                 _isPlaying.value = true
+                playbackStartElapsedMs = SystemClock.elapsedRealtime()
+                playbackStartPosMs = audioPlayer.getCurrentPosition()
                 startPlaybackProgressTimer()
             }
         } else {
             // New file selected
             stopPlaying()
+            if (!requestAudioFocusForPlayback()) {
+                _operationError.value = "تعذر تشغيل الصوت — فقدان تركيز الصوت"
+            }
             _currentlyPlayingFile.value = recording.file
             _isPlaying.value = true
             _playbackPositionMs.value = 0
             _playbackDurationMs.value = recording.durationMs.toInt()
+            playbackStartElapsedMs = SystemClock.elapsedRealtime()
+            playbackStartPosMs = 0
 
             val success = audioPlayer.play(recording.file) {
                 // Done callback
@@ -224,6 +437,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _playbackProgress.value = 0f
                 playbackProgressJob?.cancel()
                 playbackProgressJob = null
+                playbackStartElapsedMs = 0L
+                playbackStartPosMs = 0
+                abandonAudioFocus()
                 updateListWithPlaybackState()
             }
 
@@ -232,6 +448,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 _isPlaying.value = false
                 _currentlyPlayingFile.value = null
+                abandonAudioFocus()
             }
         }
         updateListWithPlaybackState()
@@ -245,6 +462,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _currentlyPlayingFile.value = null
         _playbackPositionMs.value = 0
         _playbackProgress.value = 0f
+        playbackStartElapsedMs = 0L
+        playbackStartPosMs = 0
+        abandonAudioFocus()
         updateListWithPlaybackState()
     }
 
@@ -255,32 +475,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             audioPlayer.seekTo(positionMs)
             _playbackPositionMs.value = positionMs
             _playbackProgress.value = progress
+            // Reset elapsed base for accurate ticker (1.1)
+            playbackStartElapsedMs = SystemClock.elapsedRealtime()
+            playbackStartPosMs = positionMs
             updateListWithPlaybackState()
         }
     }
 
     private fun startPlaybackProgressTimer() {
         playbackProgressJob?.cancel()
-        playbackProgressJob = viewModelScope.launch(Dispatchers.Default) {
-            while (audioPlayer.isPlaying()) {
-                delay(150)
-                val pos = audioPlayer.getCurrentPosition()
+        // Initialize base for drift-corrected ticker
+        playbackStartElapsedMs = SystemClock.elapsedRealtime()
+        playbackStartPosMs = audioPlayer.getCurrentPosition()
+        playbackProgressJob = viewModelScope.launch {
+            while (isActive && audioPlayer.isPlaying()) {
+                delay(80)
                 val dur = audioPlayer.getDuration()
                 if (dur > 0) {
-                    _playbackPositionMs.value = pos
-                    _playbackDurationMs.value = dur
-                    _playbackProgress.value = pos.toFloat() / dur.toFloat()
-                    updateListWithPlaybackState()
+                    val elapsed = (SystemClock.elapsedRealtime() - playbackStartElapsedMs).toInt()
+                    val predicted = (playbackStartPosMs + elapsed).coerceAtMost(dur)
+                    val actual = audioPlayer.getCurrentPosition()
+                    // Correct drift >300ms (1.1)
+                    val pos = if (abs(predicted - actual) > 300) {
+                        playbackStartElapsedMs = SystemClock.elapsedRealtime()
+                        playbackStartPosMs = actual
+                        actual
+                    } else predicted
+                    // Reduce churn: only publish if meaningful delta
+                    val prevPos = _playbackPositionMs.value
+                    if (abs(pos - prevPos) >= 80 || pos == 0 || pos == dur) {
+                        _playbackPositionMs.value = pos
+                        _playbackDurationMs.value = dur
+                        _playbackProgress.value = pos.toFloat() / dur.toFloat()
+                        updateListWithPlaybackState()
+                    }
                 }
             }
         }
     }
 
+    private var lastPlaybackHash: Int = 0
     private fun updateListWithPlaybackState() {
         val playingFile = _currentlyPlayingFile.value
         val playingState = _isPlaying.value
         val progress = _playbackProgress.value
         val pos = _playbackPositionMs.value
+
+        // Simple deduplication to reduce recomposition churn (1.1)
+        val hash = (playingFile?.hashCode() ?: 0) * 31 + (if (playingState) 1 else 0) + (progress * 1000).toInt() + pos / 150
+        if (hash == lastPlaybackHash && _recordings.value.isNotEmpty()) {
+            // still update occasionally but skip excessive no-op
+            if (pos % 500 != 0) return
+        }
+        lastPlaybackHash = hash
 
         _recordings.update { items ->
             items.map { item ->
@@ -415,8 +662,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        try {
+            RecordingService.stop(context)
+        } catch (e: Exception) { }
         audioRecorder.stop()
         audioPlayer.stop()
+        abandonAudioFocus()
+        unregisterNoisyReceiver()
         recordingTimerJob?.cancel()
         recordingVisualizerJob?.cancel()
         playbackProgressJob?.cancel()

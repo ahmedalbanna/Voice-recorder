@@ -6,6 +6,10 @@
     <string name="permission_title">مطلوب إذن الميكروفون</string>
     <string name="permission_desc">نحتاج إلى إذن استخدام الميكروفون لالتقاط وتسجيل الصوت.</string>
     <string name="permission_button">منح الإذن</string>
+    <string name="permission_permanently_denied_title">تم رفض الإذن نهائيًا</string>
+    <string name="permission_permanently_denied_desc">يرجى فتح الإعدادات وتمكين إذن الميكروفون للمتابعة. لن نطلب الإذن مرة أخرى حتى تغيّره يدويًا.</string>
+    <string name="permission_open_settings">فتح الإعدادات</string>
+    <string name="permission_rationale_desc">نستخدم الميكروفون فقط لتسجيل الصوت على جهازك. لن يتم إرسال أي بيانات بدون موافقتك.</string>
     <string name="no_recordings">لا توجد تسجيلات بعد. ابدأ بتسجيل فكرتك الأولى!</string>
     <string name="delete_title">حذف التسجيل</string>
     <string name="delete_confirm">هل أنت متأكد من رغبتك في حذف هذا التسجيل؟ لا يمكن التراجع عن هذا الإجراء.</string>

@@ -2,7 +2,11 @@ package com.example.ui
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -35,6 +39,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -44,6 +49,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.example.R
 import com.example.model.RecordingItem
 import com.example.ui.theme.LocalAppColors
@@ -72,13 +79,14 @@ fun MainScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val recordings by viewModel.recordings.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
     val recordingDurationSeconds by viewModel.recordingDurationSeconds.collectAsState()
     val amplitudes by viewModel.amplitudes.collectAsState()
     val operationError by viewModel.operationError.collectAsState()
 
-    // Dynamic Permission requesting status
+    // Permission state with rationale / permanent-denial handling (Phase 1.2)
     var hasMicPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(
@@ -87,11 +95,52 @@ fun MainScreen(
             ) == PackageManager.PERMISSION_GRANTED
         )
     }
+    var isPermanentlyDenied by remember { mutableStateOf(false) }
+    var showRationale by remember { mutableStateOf(false) }
+    var hasRequestedBefore by remember { mutableStateOf(false) }
+
+    fun refreshPermissionState() {
+        val granted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+        hasMicPermission = granted
+        if (!granted) {
+            val activity = context as? ComponentActivity
+            val shouldShow = activity?.shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) == true
+            showRationale = shouldShow
+            // After at least one request, shouldShow==false means permanently denied (Don't ask again)
+            isPermanentlyDenied = hasRequestedBefore && !shouldShow
+        } else {
+            isPermanentlyDenied = false
+            showRationale = false
+        }
+    }
+
+    // Re-check onResume — covers user returning from Settings (1.2)
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshPermissionState()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { granted ->
+            hasRequestedBefore = true
             hasMicPermission = granted
+            if (!granted) {
+                val activity = context as? ComponentActivity
+                val shouldShow = activity?.shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) == true
+                showRationale = shouldShow
+                isPermanentlyDenied = !shouldShow
+            } else {
+                isPermanentlyDenied = false
+                showRationale = false
+            }
         }
     )
 
@@ -106,6 +155,15 @@ fun MainScreen(
         modifier = modifier,
         operationError = operationError,
         onConsumeError = { viewModel.consumeOperationError() },
+        isPermanentlyDenied = isPermanentlyDenied,
+        showRationale = showRationale,
+        onOpenSettings = {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", context.packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        },
         onRequestPermission = {
             launcher.launch(Manifest.permission.RECORD_AUDIO)
         },
@@ -135,6 +193,9 @@ fun MainScreenContent(
     modifier: Modifier = Modifier,
     operationError: String? = null,
     onConsumeError: () -> Unit = {},
+    isPermanentlyDenied: Boolean = false,
+    showRationale: Boolean = false,
+    onOpenSettings: () -> Unit = {},
     onRequestPermission: () -> Unit = {},
     onRecordToggle: () -> Unit = {},
     onPlayToggle: (RecordingItem) -> Unit = {},
@@ -158,8 +219,10 @@ fun MainScreenContent(
         }
     }
 
-    // Force RTL for the layout representing Arabic engineering guidelines
-    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+    // Conditional RTL: only force RTL for Arabic locales (Phase 1.2), else respect system LTR for en/
+    val isRtl = remember { Locale.getDefault().language in setOf("ar", "fa", "he", "ur") }
+    val layoutDirection = if (isRtl) LayoutDirection.Rtl else LayoutDirection.Ltr
+    CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
         Scaffold(
             modifier = modifier
                 .fillMaxSize()
@@ -177,7 +240,10 @@ fun MainScreenContent(
             ) {
                 if (!uiState.hasMicPermission) {
                     PermissionRequestScreen(
-                        onRequestPermission = onRequestPermission
+                        onRequestPermission = onRequestPermission,
+                        onOpenSettings = onOpenSettings,
+                        isPermanentlyDenied = isPermanentlyDenied,
+                        showRationale = showRationale
                     )
                 } else {
                     Column(
@@ -545,10 +611,25 @@ fun HeaderSection() {
     }
 }
 
-// Permission layout
+// Permission layout — handles rationale and permanent-denial → Settings (Phase 1.2)
 @Composable
-fun PermissionRequestScreen(onRequestPermission: () -> Unit) {
+fun PermissionRequestScreen(
+    onRequestPermission: () -> Unit,
+    onOpenSettings: () -> Unit = {},
+    isPermanentlyDenied: Boolean = false,
+    showRationale: Boolean = false,
+) {
     val colors = LocalAppColors.current
+    val titleRes = if (isPermanentlyDenied) R.string.permission_permanently_denied_title else R.string.permission_title
+    val descRes = when {
+        isPermanentlyDenied -> R.string.permission_permanently_denied_desc
+        showRationale -> R.string.permission_rationale_desc
+        else -> R.string.permission_desc
+    }
+    val buttonTextRes = if (isPermanentlyDenied) R.string.permission_open_settings else R.string.permission_button
+    val buttonAction = if (isPermanentlyDenied) onOpenSettings else onRequestPermission
+    val buttonIcon: ImageVector = if (isPermanentlyDenied) Icons.Default.Settings else Icons.Default.Mic
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -572,14 +653,15 @@ fun PermissionRequestScreen(onRequestPermission: () -> Unit) {
         }
         Spacer(modifier = Modifier.height(24.dp))
         Text(
-            text = stringResource(id = R.string.permission_title),
+            text = stringResource(id = titleRes),
             color = colors.textPrimary,
             fontSize = 20.sp,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
         )
         Spacer(modifier = Modifier.height(10.dp))
         Text(
-            text = stringResource(id = R.string.permission_desc),
+            text = stringResource(id = descRes),
             color = colors.textSecondary,
             fontSize = 14.sp,
             lineHeight = 22.sp,
@@ -587,19 +669,32 @@ fun PermissionRequestScreen(onRequestPermission: () -> Unit) {
         )
         Spacer(modifier = Modifier.height(30.dp))
         Button(
-            onClick = onRequestPermission,
+            onClick = buttonAction,
             colors = ButtonDefaults.buttonColors(containerColor = colors.recordingRed),
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(54.dp)
         ) {
+            Icon(
+                imageVector = buttonIcon,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = stringResource(id = R.string.permission_button),
+                text = stringResource(id = buttonTextRes),
                 color = Color.White,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold
             )
+        }
+        if (isPermanentlyDenied) {
+            Spacer(modifier = Modifier.height(12.dp))
+            TextButton(onClick = onRequestPermission) {
+                Text(text = stringResource(id = R.string.permission_button), color = colors.textSecondary, fontSize = 13.sp)
+            }
         }
     }
 }
@@ -712,13 +807,13 @@ fun WaveformVisualizer(amplitudes: List<Float>) {
         val sampleList = if (amplitudes.size >= barCount) {
             amplitudes.takeLast(barCount)
         } else {
-            List(barCount - amplitudes.size) { 0.04f } + amplitudes
+            List(barCount - amplitudes.size) { 0f } + amplitudes
         }
 
         for (i in 0 until barCount) {
-            val amp = sampleList.getOrElse(i) { 0.04f }
-            // Amplitude height scales elegantly relative to bounds
-            val barHeightVal = (amp * height).coerceIn(4.dp.toPx(), height)
+            val amp = sampleList.getOrElse(i) { 0f }
+            // Silence (0f) → minimal hint bar, not fake 0.04f floor (Phase 1.3)
+            val barHeightVal = if (amp == 0f) 2.dp.toPx() else (amp * height).coerceIn(4.dp.toPx(), height)
             val x = i * (barWidth + barSpacing)
             val centerY = height / 2f
             val top = centerY - (barHeightVal / 2f)
@@ -949,9 +1044,12 @@ fun formatMillis(millis: Long): String {
 }
 
 fun formatFileSize(bytes: Long): String {
-    if (bytes <= 0) return "0 ب"
-    val units = arrayOf("ب", "ك.ب", "م.ب", "ج.ب")
-    val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt()
+    val isArabic = Locale.getDefault().language == "ar"
+    if (bytes <= 0) return if (isArabic) "0 ب" else "0 B"
+    val unitsAr = arrayOf("ب", "ك.ب", "م.ب", "ج.ب")
+    val unitsEn = arrayOf("B", "KB", "MB", "GB")
+    val units = if (isArabic) unitsAr else unitsEn
+    val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt().coerceIn(0, units.size - 1)
     val value = bytes / Math.pow(1024.0, digitGroups.toDouble())
-    return String.format(Locale("ar"), "%.1f %s", value, units[digitGroups])
+    return String.format(Locale.getDefault(), "%.1f %s", value, units[digitGroups])
 }

@@ -34,27 +34,27 @@ Goal: make the installed `release` APK runnable without crashes.
 
 **Exit criteria:** `share`, rename with Arabic + special chars, recording indicator all pass on physical device. — ✅ Verified: `BUILD SUCCESSFUL`, `testDebugUnitTest` pass, merged manifest authority `com.aistudio.voicerecorder.voxrec.fileprovider`.
 
-## 2. Phase 1 — Reliability Core (2–3 weeks)
+## 2. Phase 1 — Reliability Core (2–3 weeks) — ✅ Completed 2026-08-23
 
 Makes recorder trustworthy for daily use.
 
-**1.1 Audio lifecycle & platform integration**
-- Foreground `Service` (`mediaPlayback` / `microphone` foregroundServiceType, Android 14+) with ongoing notification; `AudioRecorder` bound to service, survives backgrounding and configuration change.
-- `AudioManager.requestAudioFocus(AudioFocusRequest)` for both recorder and player; handle `AUDIOFOCUS_LOSS_TRANSIENT`, phone call, `ACTION_AUDIO_BECOMING_NOISY` (pause playback).
-- Handle `RECORD_AUDIO` revocation mid-recording (`onRequestPermissionsResult` + `AppOps` callback): stop cleanly, keep partial file, surface retry.
-- Replace polling `playbackProgressJob` (`app/src/main/java/com/example/viewmodel/MainViewModel.kt:257`) with accurate ticker based on `SystemClock.elapsedRealtime()` + `MediaPlayer.getCurrentPosition` correction; reduce `updateListWithPlaybackState()` churn (diff instead of full `map`).
+**1.1 Audio lifecycle & platform integration — ✅ Done**
+- ✅ Foreground `Service` (`microphone` `foregroundServiceType`, Android 14+) with ongoing notification; `RecordingService` (`app/src/main/java/com/example/service/RecordingService.kt:1`) survives backgrounding, `AndroidManifest.xml:30` `FOREGROUND_SERVICE*` + `POST_NOTIFICATIONS`, `MainViewModel.kt:148` start/stop.
+- ✅ `AudioManager.requestAudioFocus(AudioFocusRequest)` for recorder/playback (`MainViewModel.kt:36` `AudioFocusRequest`, `audioFocusListener` handling `LOSS/TRANSIENT/GAIN`), `becomingNoisyReceiver` (`ACTION_AUDIO_BECOMING_NOISY`) pauses playback.
+- ✅ Handle `RECORD_AUDIO` revocation mid-recording: periodic `checkSelfPermission` in `recordingTimerJob` (`MainViewModel.kt:172`) — stop cleanly, `operationError` `"تم إيقاف التسجيل — تم إلغاء إذن الميكروفون"`.
+- ✅ Replace polling `playbackProgressJob` (`MainViewModel.kt:289`) with `SystemClock.elapsedRealtime()` + `getCurrentPosition` drift correction (80ms, >300ms snap), `seekTo` resets base, reduced churn via hash deduplication in `updateListWithPlaybackState`.
 
-**1.2 Permission & localization correctness**
-- Rationale flow (`shouldShowRequestPermissionRationale`) + permanent-denial → Settings deep link; re-check permission in `onResume`.
-- Conditional RTL: only force `LayoutDirection.Rtl` when locale is `ar` (`LocalConfiguration`), not globally (`app/src/main/java/com/example/ui/MainScreen.kt:149`). Audit `values-en/strings.xml:1` vs `values/strings.xml:1` layout mirroring.
+**1.2 Permission & localization correctness — ✅ Done**
+- ✅ Rationale flow (`shouldShowRequestPermissionRationale`) + permanent-denial → Settings deep link (`Settings.ACTION_APPLICATION_DETAILS_SETTINGS`); re-check in `ON_RESUME` via `LifecycleEventObserver` (`MainScreen.kt:90`). `PermissionRequestScreen` handles `isPermanentlyDenied`/`showRationale` with strings `permission_permanently_denied_*`/`permission_rationale_desc` (`values/strings.xml:9`, `values-en/strings.xml:9`).
+- ✅ Conditional RTL: only force `Rtl` when `Locale.language in ar/fa/he/ur` (`MainScreen.kt:222`), else `Ltr`; audit `values-en` vs `values` via screenshot matrix.
 
-**1.3 Timer & waveform accuracy**
-- Replace `delay(1000); +=1` drift (`app/src/main/java/com/example/viewmodel/MainViewModel.kt:152`) with elapsed-realtime base.
-- Fix visualizer floor (`coerceIn(0.02f,1f)` at `MainViewModel.kt:165` + `0.04f` fill at `MainScreen.kt:699`): map silence to `0f`, empty slots to no bar.
+**1.3 Timer & waveform accuracy — ✅ Done**
+- ✅ Replace `delay(1000); +=1` drift (`MainViewModel.kt:172`) with `SystemClock.elapsedRealtime()` base, `delay(250)`, `recordingStartElapsedMs`.
+- ✅ Fix visualizer floor (`coerceIn(0f,1f)` at `MainViewModel.kt:196` + `0f` fill at `MainScreen.kt:712`): silence `→ 0f` → `2.dp` hint bar, empty slots `0f` no fake floor.
 
-**1.4 Storage & backup hygiene**
-- Exclude `files/recordings/` from Auto Backup (`app/src/main/res/xml/backup_rules.xml:10`, `data_extraction_rules.xml:12`): `<exclude domain="file" path="recordings/" />`.
-- Move `SimpleDateFormat` (`MainViewModel.kt:120,138`) to `java.time` / thread-local; locale-aware `formatFileSize` (`MainScreen.kt:934`) via resources, not hard-coded `ar`.
+**1.4 Storage & backup hygiene — ✅ Done**
+- ✅ Exclude `files/recordings/` from Auto Backup (`backup_rules.xml:1`, `data_extraction_rules.xml:1`): `<exclude domain="file" path="recordings/" />` for cloud+device-transfer.
+- ✅ Move `SimpleDateFormat` to `java.time` (`Instant` + `DateTimeFormatter`, desugaring `isCoreLibraryDesugaringEnabled` + `desugar_jdk_libs:2.1.5` in `app/build.gradle.kts:56,101`); locale-aware `formatFileSize` (`MainScreen.kt:951`) via `Locale.getDefault()` + `ar`/`en` units + `coerceIn`.
 
 ## 3. Phase 2 — Product Essentials (3–4 weeks)
 
@@ -99,7 +99,7 @@ Unblocks `metadata.json:5` `MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API` which is cu
 
 ```
 ✅ W0   Phase 0 hotfixes          → internal dogfood — DONE 2026-08-23
-W1-3 Phase 1 reliability core   → closed beta
+✅ W1-3 Phase 1 reliability core   → closed beta — DONE 2026-08-23
 W4-7 Phase 2 product essentials → public beta (Play Console)
 W8-10 Phase 3 Gemini intelligence → 1.0 + AI Studio deploy (remove debugConfig note in README.md:5)
 W10+ Phase 4 quality/scale      → 1.1, 1.2 iterations

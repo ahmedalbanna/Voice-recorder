@@ -6,6 +6,10 @@
     <string name="permission_title">Microphone permission required</string>
     <string name="permission_desc">We need microphone access to capture and record your audio.</string>
     <string name="permission_button">Grant permission</string>
+    <string name="permission_permanently_denied_title">Permission permanently denied</string>
+    <string name="permission_permanently_denied_desc">Please open Settings and enable Microphone permission to continue. We won’t ask again until you change it manually.</string>
+    <string name="permission_open_settings">Open Settings</string>
+    <string name="permission_rationale_desc">We only use the microphone to record audio on your device. No data is sent without your consent.</string>
     <string name="no_recordings">No recordings yet. Start by recording your first idea!</string>
     <string name="delete_title">Delete recording</string>
     <string name="delete_confirm">Are you sure you want to delete this recording? This action cannot be undone.</string>
