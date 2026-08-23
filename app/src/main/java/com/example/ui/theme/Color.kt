@@ -31,3 +31,33 @@ val PlaybackWhite = Color(0xFFE2E2E6)
 val DarkPrimary = RecordingRed
 val DarkSecondary = PlaybackGold
 val DarkTertiary = PlaybackWhite
+
+// Elegant Light Scheme (Soft neutral gray with the same brand accents)
+val LightBackground = Color(0xFFF9F9FC)
+val LightCardSurfaceColor = Color(0xFFFFFFFF)
+val LightCardSurfaceActiveColor = Color(0xFFEFF1F6)
+val LightCardBorderColor = Color(0xFFE2E3EA)
+
+// M3 Light-blue active selection (darkened for contrast on white)
+val LightAccentActivePill = Color(0xFFD1E4FF)
+val LightAccentOnActiveText = Color(0xFF00315C)
+val LightAccentBlue = Color(0xFF0B57D0)
+
+// Deeper red so recording indicators stay vivid on bright surfaces
+val LightRecordingRed = Color(0xFFB3261E)
+val LightRecordingRedDeep = Color(0xFFFFFFFF)
+val LightRecordingRedGlow = Color(0x29B3261E)
+
+// Text Hierarchy
+val LightTextPrimary = Color(0xFF1A1C1E)
+val LightTextSecondary = Color(0xFF5C5F66)
+val LightTextHint = Color(0xFF96999F)
+
+// Playback indicators
+val LightPlaybackGold = Color(0xFF8F6A00)
+val LightPlaybackOnSurface = Color(0xFF44474F)
+
+// Base Material 3 Colors
+val LightPrimary = LightRecordingRed
+val LightSecondary = LightPlaybackGold
+val LightTertiary = LightPlaybackOnSurface

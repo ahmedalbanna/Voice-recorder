@@ -1,0 +1,27 @@
+<resources>
+    <string name="app_name">Sada</string>
+    <string name="recording_state_idle">Press the button to start</string>
+    <string name="recording_state_recording">Recording audio...</string>
+    <string name="recording_state_paused">Recording paused</string>
+    <string name="permission_title">Microphone permission required</string>
+    <string name="permission_desc">We need microphone access to capture and record your audio.</string>
+    <string name="permission_button">Grant permission</string>
+    <string name="no_recordings">No recordings yet. Start by recording your first idea!</string>
+    <string name="delete_title">Delete recording</string>
+    <string name="delete_confirm">Are you sure you want to delete this recording? This action cannot be undone.</string>
+    <string name="delete_button">Delete</string>
+    <string name="cancel_button">Cancel</string>
+    <string name="rename_title">Rename recording</string>
+    <string name="rename_placeholder">New recording name</string>
+    <string name="rename_button">Confirm</string>
+    <string name="record_btn_desc">Record audio button</string>
+    <string name="play_btn_desc">Play audio</string>
+    <string name="pause_btn_desc">Pause</string>
+    <string name="delete_btn_desc">Delete file</string>
+    <string name="rename_btn_desc">Edit name</string>
+    <string name="share_btn_desc">Share recording</string>
+    <string name="recording_prefix">Recording_</string>
+    <string name="header_subtitle">Professional Voice Recorder</string>
+    <string name="smart_badge_label">Smart Series</string>
+    <string name="recordings_section_title">Your Recordings</string>
+</resources>

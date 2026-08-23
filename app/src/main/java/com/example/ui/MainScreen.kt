@@ -3,7 +3,6 @@ package com.example.ui
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -47,11 +46,26 @@ import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import com.example.R
 import com.example.model.RecordingItem
-import com.example.ui.theme.*
+import com.example.ui.theme.LocalAppColors
 import com.example.viewmodel.MainViewModel
 import java.util.Locale
 
-@OptIn(ExperimentalAnimationApi::class)
+/**
+ * Pure UI state of the main screen. Decoupled from [MainViewModel] so the
+ * interface can be rendered/tested in any combination of states.
+ */
+data class MainUiState(
+    val hasMicPermission: Boolean = true,
+    val recordings: List<RecordingItem> = emptyList(),
+    val isRecording: Boolean = false,
+    val recordingDurationSeconds: Int = 0,
+    val amplitudes: List<Float> = emptyList()
+)
+
+/**
+ * Stateful entry point: collects ViewModel state and mic permission flow,
+ * then delegates all rendering to [MainScreenContent].
+ */
 @Composable
 fun MainScreen(
     viewModel: MainViewModel,
@@ -62,18 +76,6 @@ fun MainScreen(
     val isRecording by viewModel.isRecording.collectAsState()
     val recordingDurationSeconds by viewModel.recordingDurationSeconds.collectAsState()
     val amplitudes by viewModel.amplitudes.collectAsState()
-
-    // Playback state
-    val currentlyPlayingFile by viewModel.currentlyPlayingFile.collectAsState()
-    val isPlaying by viewModel.isPlaying.collectAsState()
-    val playbackProgress by viewModel.playbackProgress.collectAsState()
-    val playbackPositionMs by viewModel.playbackPositionMs.collectAsState()
-    val playbackDurationMs by viewModel.playbackDurationMs.collectAsState()
-
-    // Dialog holding states
-    var recordingToDelete by remember { mutableStateOf<RecordingItem?>(null) }
-    var recordingToRename by remember { mutableStateOf<RecordingItem?>(null) }
-    var renameInputText by remember { mutableStateOf("") }
 
     // Dynamic Permission requesting status
     var hasMicPermission by remember {
@@ -92,13 +94,64 @@ fun MainScreen(
         }
     )
 
+    MainScreenContent(
+        uiState = MainUiState(
+            hasMicPermission = hasMicPermission,
+            recordings = recordings,
+            isRecording = isRecording,
+            recordingDurationSeconds = recordingDurationSeconds,
+            amplitudes = amplitudes
+        ),
+        modifier = modifier,
+        onRequestPermission = {
+            launcher.launch(Manifest.permission.RECORD_AUDIO)
+        },
+        onRecordToggle = {
+            if (isRecording) {
+                viewModel.stopRecording()
+            } else {
+                viewModel.startRecording()
+            }
+        },
+        onPlayToggle = { item -> viewModel.togglePlayPause(item) },
+        onSeek = { progress -> viewModel.seekTo(progress) },
+        onDeleteConfirm = { item -> viewModel.deleteRecording(item) },
+        onRenameConfirm = { item, newName -> viewModel.renameRecording(item, newName) },
+        onShare = { item -> viewModel.shareRecording(item, context) }
+    )
+}
+
+/**
+ * Stateless renderer of the main screen (RTL layout representing Arabic
+ * engineering guidelines). Safe to preview and screenshot-test in isolation.
+ */
+@OptIn(ExperimentalAnimationApi::class)
+@Composable
+fun MainScreenContent(
+    uiState: MainUiState,
+    modifier: Modifier = Modifier,
+    onRequestPermission: () -> Unit = {},
+    onRecordToggle: () -> Unit = {},
+    onPlayToggle: (RecordingItem) -> Unit = {},
+    onSeek: (Float) -> Unit = {},
+    onDeleteConfirm: (RecordingItem) -> Unit = {},
+    onRenameConfirm: (RecordingItem, String) -> Unit = { _, _ -> },
+    onShare: (RecordingItem) -> Unit = {}
+) {
+    val colors = LocalAppColors.current
+
+    // Dialog holding states
+    var recordingToDelete by remember { mutableStateOf<RecordingItem?>(null) }
+    var recordingToRename by remember { mutableStateOf<RecordingItem?>(null) }
+    var renameInputText by remember { mutableStateOf("") }
+
     // Force RTL for the layout representing Arabic engineering guidelines
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Scaffold(
             modifier = modifier
                 .fillMaxSize()
-                .background(DeepDarkBackground),
-            containerColor = DeepDarkBackground,
+                .background(colors.background),
+            containerColor = colors.background,
             topBar = {
                 HeaderSection()
             }
@@ -108,11 +161,9 @@ fun MainScreen(
                     .fillMaxSize()
                     .padding(paddingValues)
             ) {
-                if (!hasMicPermission) {
+                if (!uiState.hasMicPermission) {
                     PermissionRequestScreen(
-                        onRequestPermission = {
-                            launcher.launch(Manifest.permission.RECORD_AUDIO)
-                        }
+                        onRequestPermission = onRequestPermission
                     )
                 } else {
                     Column(
@@ -126,12 +177,12 @@ fun MainScreen(
                                 .fillMaxWidth()
                                 .height(160.dp)
                                 .clip(RoundedCornerShape(24.dp))
-                                .background(CardSurfaceColor)
-                                .border(1.dp, CardBorderColor, RoundedCornerShape(24.dp)),
+                                .background(colors.cardSurface)
+                                .border(1.dp, colors.cardBorder, RoundedCornerShape(24.dp)),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (isRecording) {
-                                WaveformVisualizer(amplitudes = amplitudes)
+                            if (uiState.isRecording) {
+                                WaveformVisualizer(amplitudes = uiState.amplitudes)
                             } else {
                                 Column(
                                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -141,13 +192,13 @@ fun MainScreen(
                                     Icon(
                                         imageVector = Icons.Default.Mic,
                                         contentDescription = null,
-                                        tint = TextSecondary,
+                                        tint = colors.textSecondary,
                                         modifier = Modifier.size(36.dp)
                                     )
                                     Spacer(modifier = Modifier.height(10.dp))
                                     Text(
                                         text = stringResource(id = R.string.recording_state_idle),
-                                        color = TextSecondary,
+                                        color = colors.textSecondary,
                                         fontSize = 15.sp,
                                         fontWeight = FontWeight.Medium,
                                         textAlign = TextAlign.Center
@@ -159,7 +210,7 @@ fun MainScreen(
                         Spacer(modifier = Modifier.height(20.dp))
 
                         // Live Timer or Status indicator while recording
-                        if (isRecording) {
+                        if (uiState.isRecording) {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -167,7 +218,7 @@ fun MainScreen(
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
-                                    text = formatSeconds(recordingDurationSeconds),
+                                    text = formatSeconds(uiState.recordingDurationSeconds),
                                     color = Color.White,
                                     fontSize = 56.sp,
                                     fontWeight = FontWeight.Light,
@@ -183,7 +234,7 @@ fun MainScreen(
                                     horizontalArrangement = Arrangement.Center
                                 ) {
                                     val pulseScale by animateFloatAsState(
-                                        targetValue = if (recordingDurationSeconds % 2 == 0) 1.1f else 0.9f,
+                                        targetValue = if (uiState.recordingDurationSeconds % 2 == 0) 1.1f else 0.9f,
                                         animationSpec = infiniteRepeatable(
                                             animation = tween(500, easing = LinearEasing),
                                             repeatMode = RepeatMode.Reverse
@@ -195,12 +246,12 @@ fun MainScreen(
                                             .size(8.dp)
                                             .scale(pulseScale)
                                             .clip(CircleShape)
-                                            .background(RecordingRed)
+                                            .background(colors.recordingRed)
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
                                         text = stringResource(id = R.string.recording_state_recording),
-                                        color = AccentLightBlue.copy(alpha = 0.9f),
+                                        color = colors.accentLightBlue.copy(alpha = 0.9f),
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Medium,
                                         letterSpacing = 0.5.sp
@@ -209,7 +260,7 @@ fun MainScreen(
                             }
                         }
 
-                        if (isRecording) {
+                        if (uiState.isRecording) {
                             Spacer(modifier = Modifier.height(16.dp))
                         }
 
@@ -219,14 +270,8 @@ fun MainScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             RecordTriggerButton(
-                                isRecording = isRecording,
-                                onClick = {
-                                    if (isRecording) {
-                                        viewModel.stopRecording()
-                                    } else {
-                                        viewModel.startRecording()
-                                    }
-                                }
+                                isRecording = uiState.isRecording,
+                                onClick = onRecordToggle
                             )
                         }
 
@@ -234,15 +279,15 @@ fun MainScreen(
 
                         // Section Title: "التسجيلات المحفوظة"
                         Text(
-                            text = "تسجيلاتك الصوتية",
+                            text = stringResource(id = R.string.recordings_section_title),
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
-                            color = TextPrimary,
+                            color = colors.textPrimary,
                             modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)
                         )
 
                         // Recordings List View
-                        if (recordings.isEmpty()) {
+                        if (uiState.recordings.isEmpty()) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -256,13 +301,13 @@ fun MainScreen(
                                     Icon(
                                         imageVector = Icons.Default.MusicNote,
                                         contentDescription = null,
-                                        tint = TextHint,
+                                        tint = colors.textHint,
                                         modifier = Modifier.size(54.dp)
                                     )
                                     Spacer(modifier = Modifier.height(14.dp))
                                     Text(
                                         text = stringResource(id = R.string.no_recordings),
-                                        color = TextSecondary,
+                                        color = colors.textSecondary,
                                         fontSize = 14.sp,
                                         textAlign = TextAlign.Center,
                                         lineHeight = 22.sp
@@ -279,19 +324,19 @@ fun MainScreen(
                                 contentPadding = PaddingValues(bottom = 20.dp)
                             ) {
                                 items(
-                                    items = recordings,
+                                    items = uiState.recordings,
                                     key = { it.file.absolutePath }
                                 ) { item ->
                                     RecordingItemCard(
                                         item = item,
-                                        onPlayToggle = { viewModel.togglePlayPause(item) },
-                                        onSeek = { progress -> viewModel.seekTo(progress) },
+                                        onPlayToggle = { onPlayToggle(item) },
+                                        onSeek = onSeek,
                                         onDeleteRequest = { recordingToDelete = item },
                                         onRenameRequest = {
                                             recordingToRename = item
                                             renameInputText = item.name
                                         },
-                                        onShare = { viewModel.shareRecording(item, context) }
+                                        onShare = { onShare(item) }
                                     )
                                 }
                             }
@@ -309,8 +354,8 @@ fun MainScreen(
                         .fillMaxWidth()
                         .padding(16.dp),
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = CardSurfaceColor),
-                    border = BorderStroke(1.dp, CardBorderColor)
+                    colors = CardDefaults.cardColors(containerColor = colors.cardSurface),
+                    border = BorderStroke(1.dp, colors.cardBorder)
                 ) {
                     Column(
                         modifier = Modifier
@@ -319,7 +364,7 @@ fun MainScreen(
                     ) {
                         Text(
                             text = stringResource(id = R.string.rename_title),
-                            color = TextPrimary,
+                            color = colors.textPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp,
                             modifier = Modifier.fillMaxWidth(),
@@ -329,13 +374,13 @@ fun MainScreen(
                         OutlinedTextField(
                             value = renameInputText,
                             onValueChange = { renameInputText = it },
-                            placeholder = { Text(text = stringResource(id = R.string.rename_placeholder), color = TextHint) },
-                            textStyle = LocalTextStyle.current.copy(color = TextPrimary, fontSize = 15.sp),
+                            placeholder = { Text(text = stringResource(id = R.string.rename_placeholder), color = colors.textHint) },
+                            textStyle = LocalTextStyle.current.copy(color = colors.textPrimary, fontSize = 15.sp),
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = RecordingRed,
-                                unfocusedBorderColor = CardBorderColor,
-                                cursorColor = RecordingRed
+                                focusedBorderColor = colors.recordingRed,
+                                unfocusedBorderColor = colors.cardBorder,
+                                cursorColor = colors.recordingRed
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -349,15 +394,15 @@ fun MainScreen(
                             TextButton(
                                 onClick = { recordingToRename = null }
                             ) {
-                                Text(text = stringResource(id = R.string.cancel_button), color = TextSecondary)
+                                Text(text = stringResource(id = R.string.cancel_button), color = colors.textSecondary)
                             }
                             Spacer(modifier = Modifier.width(12.dp))
                             Button(
                                 onClick = {
-                                    viewModel.renameRecording(recording, renameInputText)
+                                    onRenameConfirm(recording, renameInputText)
                                     recordingToRename = null
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = RecordingRed),
+                                colors = ButtonDefaults.buttonColors(containerColor = colors.recordingRed),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
                                 Text(text = stringResource(id = R.string.rename_button), color = Color.White)
@@ -376,8 +421,8 @@ fun MainScreen(
                         .fillMaxWidth()
                         .padding(16.dp),
                     shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = CardSurfaceColor),
-                    border = BorderStroke(1.dp, CardBorderColor)
+                    colors = CardDefaults.cardColors(containerColor = colors.cardSurface),
+                    border = BorderStroke(1.dp, colors.cardBorder)
                 ) {
                     Column(
                         modifier = Modifier
@@ -386,7 +431,7 @@ fun MainScreen(
                     ) {
                         Text(
                             text = stringResource(id = R.string.delete_title),
-                            color = TextPrimary,
+                            color = colors.textPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp,
                             modifier = Modifier.fillMaxWidth(),
@@ -395,7 +440,7 @@ fun MainScreen(
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
                             text = stringResource(id = R.string.delete_confirm),
-                            color = TextSecondary,
+                            color = colors.textSecondary,
                             fontSize = 14.sp,
                             lineHeight = 22.sp,
                             textAlign = TextAlign.Right
@@ -408,15 +453,15 @@ fun MainScreen(
                             TextButton(
                                 onClick = { recordingToDelete = null }
                             ) {
-                                Text(text = stringResource(id = R.string.cancel_button), color = TextSecondary)
+                                Text(text = stringResource(id = R.string.cancel_button), color = colors.textSecondary)
                             }
                             Spacer(modifier = Modifier.width(12.dp))
                             Button(
                                 onClick = {
-                                    viewModel.deleteRecording(recording)
+                                    onDeleteConfirm(recording)
                                     recordingToDelete = null
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = RecordingRed),
+                                colors = ButtonDefaults.buttonColors(containerColor = colors.recordingRed),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
                                 Text(text = stringResource(id = R.string.delete_button), color = Color.White)
@@ -432,6 +477,7 @@ fun MainScreen(
 // App Header Section
 @Composable
 fun HeaderSection() {
+    val colors = LocalAppColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -443,14 +489,14 @@ fun HeaderSection() {
         Column {
             Text(
                 text = stringResource(id = R.string.app_name),
-                color = TextPrimary,
+                color = colors.textPrimary,
                 fontSize = 26.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = (-0.5).sp
             )
             Text(
-                text = "مسجل الصوت الاحترافي",
-                color = TextSecondary,
+                text = stringResource(id = R.string.header_subtitle),
+                color = colors.textSecondary,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium
             )
@@ -460,8 +506,8 @@ fun HeaderSection() {
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(30.dp))
-                .background(CardSurfaceColor)
-                .border(1.dp, CardBorderColor, RoundedCornerShape(30.dp))
+                .background(colors.cardSurface)
+                .border(1.dp, colors.cardBorder, RoundedCornerShape(30.dp))
                 .padding(horizontal = 14.dp, vertical = 6.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -469,12 +515,12 @@ fun HeaderSection() {
                     modifier = Modifier
                         .size(6.dp)
                         .clip(CircleShape)
-                        .background(PlaybackGold)
+                        .background(colors.playbackGold)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "سلسلة ذكية",
-                    color = PlaybackGold,
+                    text = stringResource(id = R.string.smart_badge_label),
+                    color = colors.playbackGold,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -486,6 +532,7 @@ fun HeaderSection() {
 // Permission layout
 @Composable
 fun PermissionRequestScreen(onRequestPermission: () -> Unit) {
+    val colors = LocalAppColors.current
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -497,27 +544,27 @@ fun PermissionRequestScreen(onRequestPermission: () -> Unit) {
             modifier = Modifier
                 .size(90.dp)
                 .clip(CircleShape)
-                .background(RecordingRedGlow),
+                .background(colors.recordingRedGlow),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Default.Mic,
                 contentDescription = null,
-                tint = RecordingRed,
+                tint = colors.recordingRed,
                 modifier = Modifier.size(44.dp)
             )
         }
         Spacer(modifier = Modifier.height(24.dp))
         Text(
             text = stringResource(id = R.string.permission_title),
-            color = TextPrimary,
+            color = colors.textPrimary,
             fontSize = 20.sp,
             fontWeight = FontWeight.Bold
         )
         Spacer(modifier = Modifier.height(10.dp))
         Text(
             text = stringResource(id = R.string.permission_desc),
-            color = TextSecondary,
+            color = colors.textSecondary,
             fontSize = 14.sp,
             lineHeight = 22.sp,
             textAlign = TextAlign.Center
@@ -525,7 +572,7 @@ fun PermissionRequestScreen(onRequestPermission: () -> Unit) {
         Spacer(modifier = Modifier.height(30.dp))
         Button(
             onClick = onRequestPermission,
-            colors = ButtonDefaults.buttonColors(containerColor = RecordingRed),
+            colors = ButtonDefaults.buttonColors(containerColor = colors.recordingRed),
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
@@ -547,6 +594,7 @@ fun RecordTriggerButton(
     isRecording: Boolean,
     onClick: () -> Unit
 ) {
+    val colors = LocalAppColors.current
     var isPressed by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
         targetValue = if (isPressed) 0.9f else if (isRecording) 1.05f else 1.0f,
@@ -589,7 +637,7 @@ fun RecordTriggerButton(
                 Modifier
                     .size(pulseGlowVal.dp)
                     .clip(CircleShape)
-                    .background(RecordingRed.copy(alpha = alphaVal * 0.35f))
+                    .background(colors.recordingRed.copy(alpha = alphaVal * 0.35f))
             )
         }
 
@@ -598,12 +646,12 @@ fun RecordTriggerButton(
             modifier = Modifier
                 .size(100.dp)
                 .clip(CircleShape)
-                .background(RecordingRed)
+                .background(colors.recordingRed)
                 .shadow(
                     elevation = if (isRecording) 16.dp else 4.dp,
                     shape = CircleShape,
-                    ambientColor = RecordingRed,
-                    spotColor = RecordingRed
+                    ambientColor = colors.recordingRed,
+                    spotColor = colors.recordingRed
                 )
                 .border(2.dp, Color.White.copy(alpha = 0.3f), CircleShape),
             contentAlignment = Alignment.Center
@@ -614,13 +662,13 @@ fun RecordTriggerButton(
                     modifier = Modifier
                         .size(30.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(RecordingRedDeep)
+                        .background(colors.recordingRedDeep)
                 )
             } else {
                 Icon(
                     imageVector = Icons.Default.Mic,
                     contentDescription = stringResource(id = R.string.record_btn_desc),
-                    tint = RecordingRedDeep,
+                    tint = colors.recordingRedDeep,
                     modifier = Modifier.size(38.dp)
                 )
             }
@@ -631,6 +679,7 @@ fun RecordTriggerButton(
 // Waveform visualizer Canvas element scanning max Amplitudes
 @Composable
 fun WaveformVisualizer(amplitudes: List<Float>) {
+    val colors = LocalAppColors.current
     Canvas(
         modifier = Modifier
             .fillMaxSize()
@@ -661,8 +710,8 @@ fun WaveformVisualizer(amplitudes: List<Float>) {
             drawRoundRect(
                 brush = Brush.verticalGradient(
                     colors = listOf(
-                        RecordingRed,
-                        PlaybackGold
+                        colors.recordingRed,
+                        colors.playbackGold
                     )
                 ),
                 topLeft = androidx.compose.ui.geometry.Offset(x, top),
@@ -683,13 +732,14 @@ fun RecordingItemCard(
     onRenameRequest: () -> Unit,
     onShare: () -> Unit
 ) {
+    val colors = LocalAppColors.current
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .shadow(2.dp, RoundedCornerShape(16.dp)),
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = CardSurfaceColor),
-        border = BorderStroke(1.dp, CardBorderColor)
+        colors = CardDefaults.cardColors(containerColor = colors.cardSurface),
+        border = BorderStroke(1.dp, colors.cardBorder)
     ) {
         Column(
             modifier = Modifier
@@ -705,7 +755,7 @@ fun RecordingItemCard(
                     modifier = Modifier
                         .size(46.dp)
                         .clip(CircleShape)
-                        .background(if (item.isPlaying) RecordingRedGlow else CardBorderColor)
+                        .background(if (item.isPlaying) colors.recordingRedGlow else colors.cardBorder)
                         .clickable(onClick = onPlayToggle)
                         .testTag("play_pause_button_${item.name}"),
                     contentAlignment = Alignment.Center
@@ -713,7 +763,7 @@ fun RecordingItemCard(
                     Icon(
                         imageVector = if (item.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                         contentDescription = if (item.isPlaying) stringResource(id = R.string.pause_btn_desc) else stringResource(id = R.string.play_btn_desc),
-                        tint = if (item.isPlaying) RecordingRed else PlaybackWhite,
+                        tint = if (item.isPlaying) colors.recordingRed else colors.playbackOnSurface,
                         modifier = Modifier.size(24.dp)
                     )
                 }
@@ -726,7 +776,7 @@ fun RecordingItemCard(
                 ) {
                     Text(
                         text = item.name,
-                        color = if (item.isPlaying) RecordingRed else TextPrimary,
+                        color = if (item.isPlaying) colors.recordingRed else colors.textPrimary,
                         fontWeight = FontWeight.Bold,
                         fontSize = 15.sp,
                         maxLines = 1,
@@ -739,18 +789,18 @@ fun RecordingItemCard(
                     ) {
                         Text(
                             text = item.dateString,
-                            color = TextSecondary,
+                            color = colors.textSecondary,
                             fontSize = 11.sp
                         )
                         Box(
                             modifier = Modifier
                                 .size(3.dp)
                                 .clip(CircleShape)
-                                .background(TextHint)
+                                .background(colors.textHint)
                         )
                         Text(
                             text = formatFileSize(item.fileSizeBytes),
-                            color = TextSecondary,
+                            color = colors.textSecondary,
                             fontSize = 11.sp
                         )
                     }
@@ -763,7 +813,7 @@ fun RecordingItemCard(
                     } else {
                         formatMillis(item.durationMs)
                     },
-                    color = if (item.isPlaying) RecordingRed else TextSecondary,
+                    color = if (item.isPlaying) colors.recordingRed else colors.textSecondary,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium
                 )
@@ -784,9 +834,9 @@ fun RecordingItemCard(
                         value = item.playProgress,
                         onValueChange = onSeek,
                         colors = SliderDefaults.colors(
-                            thumbColor = RecordingRed,
-                            activeTrackColor = RecordingRed,
-                            inactiveTrackColor = CardBorderColor
+                            thumbColor = colors.recordingRed,
+                            activeTrackColor = colors.recordingRed,
+                            inactiveTrackColor = colors.cardBorder
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -798,7 +848,7 @@ fun RecordingItemCard(
             Spacer(modifier = Modifier.height(12.dp))
 
             // Footer Quick actions line representing sharing and renaming features
-            Divider(color = CardBorderColor.copy(alpha = 0.5f), thickness = 1.dp)
+            Divider(color = colors.cardBorder.copy(alpha = 0.5f), thickness = 1.dp)
 
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -826,7 +876,7 @@ fun RecordingItemCard(
                     icon = Icons.Default.Delete,
                     label = stringResource(id = R.string.delete_btn_desc),
                     onClick = onDeleteRequest,
-                    color = RecordingRed.copy(alpha = 0.85f),
+                    color = colors.recordingRed.copy(alpha = 0.85f),
                     tag = "delete_button_${item.name}"
                 )
             }
@@ -839,7 +889,7 @@ fun ActionTextButton(
     icon: ImageVector,
     label: String,
     onClick: () -> Unit,
-    color: Color = TextSecondary,
+    color: Color = LocalAppColors.current.textSecondary,
     tag: String? = null
 ) {
     val modifier = if (tag != null) Modifier.testTag(tag) else Modifier

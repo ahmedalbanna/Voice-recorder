@@ -21,4 +21,7 @@
     <string name="rename_btn_desc">تعديل الاسم</string>
     <string name="share_btn_desc">مشاركة التسجيل</string>
     <string name="recording_prefix">تسجيل_</string>
+    <string name="header_subtitle">مسجل الصوت الاحترافي</string>
+    <string name="smart_badge_label">سلسلة ذكية</string>
+    <string name="recordings_section_title">تسجيلاتك الصوتية</string>
 </resources>
