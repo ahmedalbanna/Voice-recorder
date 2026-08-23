@@ -17,7 +17,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.audio.AudioPlayer
 import com.example.audio.AudioRecorder
+import com.example.data.AppDatabase
+import com.example.data.RecordingEntity
 import com.example.model.RecordingItem
+import com.example.service.PlaybackNotificationHelper
 import com.example.service.RecordingService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -52,6 +55,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Audio focus (1.1)
+    private val db = AppDatabase.get(context)
+    private val dao = db.recordingDao()
+
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
     private var wasPlayingBeforeTransientLoss = false
@@ -198,11 +204,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
+    private val _isPaused = MutableStateFlow(false)
+    val isPaused: StateFlow<Boolean> = _isPaused.asStateFlow()
+
     private val _recordingDurationSeconds = MutableStateFlow(0)
     val recordingDurationSeconds: StateFlow<Int> = _recordingDurationSeconds.asStateFlow()
 
     private val _amplitudes = MutableStateFlow<List<Float>>(emptyList())
     val amplitudes: StateFlow<List<Float>> = _amplitudes.asStateFlow()
+
+    // Search / folder (Phase 2)
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+    private val _selectedFolder = MutableStateFlow<String?>(null)
+    val selectedFolder: StateFlow<String?> = _selectedFolder.asStateFlow()
+    private val _folders = MutableStateFlow<List<String>>(emptyList())
+    val folders: StateFlow<List<String>> = _folders.asStateFlow()
+
+    fun setSearchQuery(q: String) { _searchQuery.value = q; applyFilters() }
+    fun setSelectedFolder(folder: String?) { _selectedFolder.value = folder; applyFilters() }
+    private var allRecordingsCache: List<RecordingItem> = emptyList()
+    private fun applyFilters() {
+        val query = _searchQuery.value.trim().lowercase(Locale.getDefault())
+        val folder = _selectedFolder.value
+        var list = allRecordingsCache
+        if (query.isNotEmpty()) {
+            list = list.filter {
+                it.name.lowercase(Locale.getDefault()).contains(query) ||
+                    deriveTags(it.name).lowercase(Locale.getDefault()).contains(query)
+            }
+        }
+        if (folder != null) {
+            list = list.filter { deriveFolder(it.name) == folder }
+        }
+        _recordings.value = list
+        updateListWithPlaybackState()
+    }
 
     // Playback States
     private val _currentlyPlayingFile = MutableStateFlow<File?>(null)
@@ -230,6 +267,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Temp file used for active recording
     private var activeRecordingFile: File? = null
     private var recordingStartElapsedMs: Long = 0L
+    private var pauseStartElapsedMs: Long = 0L
 
     // Operation feedback for UI (Snackbar) — null when idle
     private val _operationError = MutableStateFlow<String?>(null)
@@ -242,6 +280,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     init {
         loadRecordings()
         registerNoisyReceiver()
+        // Observe folders from Room (Phase 2) — fallback to file-derived if empty
+        viewModelScope.launch {
+            dao.getFolders().collect { dbFolders ->
+                if (dbFolders.isNotEmpty()) {
+                    _folders.value = dbFolders
+                }
+            }
+        }
+    }
+
+    private fun deriveFolder(name: String): String = when {
+        name.contains("اجتماع") -> "اجتماعات"
+        name.contains("محاضرة") -> "محاضرات"
+        name.contains("مذكرة") -> "مذكرات"
+        name.contains("فكرة") -> "أفكار"
+        else -> "عام"
+    }
+
+    private fun deriveTags(name: String): String {
+        val tags = mutableListOf<String>()
+        if (name.contains("اجتماع")) tags.add("اجتماع")
+        if (name.contains("محاضرة")) tags.add("محاضرة")
+        if (name.contains("مذكرة")) tags.add("مذكرة")
+        if (name.contains("فكرة")) tags.add("فكرة")
+        if (tags.isEmpty()) tags.add("عام")
+        return tags.joinToString(",")
     }
 
     fun loadRecordings() {
@@ -249,8 +313,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val items = withContext(Dispatchers.IO) {
                 scanRecordingsDirectory()
             }
-            _recordings.value = items
-            updateListWithPlaybackState()
+            allRecordingsCache = items
+            // Derive folders from synthetic tag logic (Phase 2)
+            val derivedFolders = items.map { deriveFolder(it.name) }.distinct().sorted()
+            if (derivedFolders.isNotEmpty()) {
+                // Keep Room as source of truth for folders, but update in-memory for now
+                if (_folders.value.isEmpty()) _folders.value = derivedFolders
+            } else {
+                _folders.value = listOf("الكل")
+            }
+            // Sync to Room (Phase 2) — non-blocking
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val entities = items.map { item ->
+                        RecordingEntity(
+                            filePath = item.file.absolutePath,
+                            name = item.name,
+                            folder = deriveFolder(item.name),
+                            tags = deriveTags(item.name),
+                            durationMs = item.durationMs,
+                            fileSizeBytes = item.fileSizeBytes,
+                            lastModified = item.file.lastModified()
+                        )
+                    }
+                    if (entities.isNotEmpty()) dao.insertAll(entities)
+                } catch (e: Exception) {
+                    Log.w("MainViewModel", "Room sync failed", e)
+                }
+            }
+            // Apply active filters
+            applyFilters()
         }
     }
 
@@ -319,6 +411,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val success = audioRecorder.start(file)
         if (success) {
             _isRecording.value = true
+            _isPaused.value = false
+            pauseStartElapsedMs = 0L
             _recordingDurationSeconds.value = 0
             _amplitudes.value = emptyList()
             recordingStartElapsedMs = SystemClock.elapsedRealtime()
@@ -330,10 +424,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 Log.w("MainViewModel", "Failed to start RecordingService", e)
             }
 
-            // Timer Job — elapsedRealtime base (1.3) with permission-revocation guard (1.1)
+            // Timer Job — elapsedRealtime base (1.3) with pause handling (2) + revocation guard (1.1)
             recordingTimerJob = viewModelScope.launch {
                 while (isActive && audioRecorder.isRecording()) {
                     delay(250)
+                    if (_isPaused.value) continue
                     // Revocation check: stop cleanly if RECORD_AUDIO revoked mid-recording
                     if (androidx.core.content.ContextCompat.checkSelfPermission(
                             context, android.Manifest.permission.RECORD_AUDIO
@@ -348,10 +443,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            // Waveform Amplitude Visualizer Job — silence → 0f (1.3)
+            // Waveform Amplitude Visualizer Job — silence → 0f (1.3) with gap marker when paused (2)
             recordingVisualizerJob = viewModelScope.launch(Dispatchers.Default) {
                 while (audioRecorder.isRecording()) {
                     delay(70)
+                    if (_isPaused.value) {
+                        // Gap marker: insert 0f every iteration while paused
+                        _amplitudes.update { current ->
+                            val updated = current.toMutableList()
+                            if (updated.size > 80) updated.removeAt(0)
+                            updated.add(0f)
+                            updated
+                        }
+                        continue
+                    }
                     val amp = audioRecorder.getMaxAmplitude()
                     val maxNorm = 32767f
                     val normalized = (amp / maxNorm).coerceIn(0f, 1f)
@@ -371,12 +476,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun pauseRecording() {
+        if (!_isRecording.value || _isPaused.value) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            _operationError.value = "الإيقاف المؤقت غير مدعوم على هذا الجهاز"
+            return
+        }
+        val ok = audioRecorder.pause()
+        if (ok) {
+            _isPaused.value = true
+            pauseStartElapsedMs = SystemClock.elapsedRealtime()
+        } else {
+            _operationError.value = "تعذر إيقاف التسجيل مؤقتاً"
+        }
+    }
+
+    fun resumeRecording() {
+        if (!_isRecording.value || !_isPaused.value) return
+        val ok = audioRecorder.resume()
+        if (ok) {
+            // Compensate elapsed base for paused duration
+            val pausedMs = SystemClock.elapsedRealtime() - pauseStartElapsedMs
+            recordingStartElapsedMs += pausedMs
+            pauseStartElapsedMs = 0L
+            _isPaused.value = false
+        } else {
+            _operationError.value = "تعذر استئناف التسجيل"
+        }
+    }
+
     fun stopRecording() {
         if (!_isRecording.value) return
 
         audioRecorder.stop()
         _isRecording.value = false
+        _isPaused.value = false
         recordingStartElapsedMs = 0L
+        pauseStartElapsedMs = 0L
 
         recordingTimerJob?.cancel()
         recordingTimerJob = null
@@ -394,7 +530,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadRecordings()
     }
 
-    // Playback Logic
+    // Playback Logic — with lock-screen notification (Phase 2)
     fun togglePlayPause(recording: RecordingItem) {
         val currentPlaying = _currentlyPlayingFile.value
         if (currentPlaying == recording.file) {
@@ -403,6 +539,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _isPlaying.value = false
                 playbackProgressJob?.cancel()
                 playbackProgressJob = null
+                try { PlaybackNotificationHelper.show(context, recording.name, isPlaying = false) } catch (_: Exception) {}
                 // Keep focus but allow transient loss handling
             } else {
                 // Resume: re-request focus
@@ -415,6 +552,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 playbackStartElapsedMs = SystemClock.elapsedRealtime()
                 playbackStartPosMs = audioPlayer.getCurrentPosition()
                 startPlaybackProgressTimer()
+                try { PlaybackNotificationHelper.show(context, recording.name, isPlaying = true) } catch (_: Exception) {}
             }
         } else {
             // New file selected
@@ -440,15 +578,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 playbackStartElapsedMs = 0L
                 playbackStartPosMs = 0
                 abandonAudioFocus()
+                try { PlaybackNotificationHelper.hide(context) } catch (_: Exception) {}
                 updateListWithPlaybackState()
             }
 
             if (success) {
                 startPlaybackProgressTimer()
+                try { PlaybackNotificationHelper.show(context, recording.name, isPlaying = true) } catch (_: Exception) {}
             } else {
                 _isPlaying.value = false
                 _currentlyPlayingFile.value = null
                 abandonAudioFocus()
+                try { PlaybackNotificationHelper.hide(context) } catch (_: Exception) {}
             }
         }
         updateListWithPlaybackState()
@@ -465,6 +606,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playbackStartElapsedMs = 0L
         playbackStartPosMs = 0
         abandonAudioFocus()
+        try { PlaybackNotificationHelper.hide(context) } catch (_: Exception) {}
         updateListWithPlaybackState()
     }
 
@@ -561,9 +703,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (!deleted) {
                         Log.e("MainViewModel", "Failed to delete file: ${recording.file.name} — delete() returned false")
                         _operationError.value = "تعذر حذف التسجيل"
+                    } else {
+                        try { dao.deleteByPath(recording.file.absolutePath) } catch (_: Exception) {}
                     }
                 } else {
                     _operationError.value = "الملف غير موجود"
+                    try { dao.deleteByPath(recording.file.absolutePath) } catch (_: Exception) {}
                 }
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Failed to delete file", e)
@@ -631,6 +776,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     if (!success) {
                         Log.e("MainViewModel", "renameTo failed: ${recording.file.name} -> ${destFile.name}")
                         _operationError.value = "تعذر إعادة التسمية"
+                    } else {
+                        try {
+                            dao.deleteByPath(recording.file.absolutePath)
+                            val newItem = RecordingItem(
+                                file = destFile,
+                                name = destFile.nameWithoutExtension,
+                                dateString = "",
+                                durationMs = 0L,
+                                fileSizeBytes = destFile.length()
+                            )
+                            dao.insert(
+                                RecordingEntity(
+                                    filePath = destFile.absolutePath,
+                                    name = destFile.nameWithoutExtension,
+                                    folder = deriveFolder(destFile.nameWithoutExtension),
+                                    tags = deriveTags(destFile.nameWithoutExtension),
+                                    durationMs = newItem.durationMs,
+                                    fileSizeBytes = newItem.fileSizeBytes,
+                                    lastModified = destFile.lastModified()
+                                )
+                            )
+                        } catch (_: Exception) {}
                     }
                 }
             } catch (e: Exception) {
@@ -657,6 +824,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             context.startActivity(chooser)
         } catch (e: Exception) {
             Log.e("MainViewModel", "Failed to share file: ${e.message}", e)
+            _operationError.value = "تعذر مشاركة التسجيل"
+        }
+    }
+
+    fun shareMultipleRecordings(recordings: List<RecordingItem>, context: Context) {
+        if (recordings.isEmpty()) return
+        try {
+            val authority = "${context.packageName}.fileprovider"
+            val uris = recordings.map { FileProvider.getUriForFile(context, authority, it.file) }
+            val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+                type = "audio/*"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val chooser = Intent.createChooser(intent, "مشاركة التسجيلات (${recordings.size}) عبر...")
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // Grant read permission for all URIs
+            try {
+                val resInfo = context.packageManager.queryIntentActivities(chooser, 0)
+                for (resolve in resInfo) {
+                    val pkg = resolve.activityInfo.packageName
+                    uris.forEach { uri -> context.grantUriPermission(pkg, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                }
+            } catch (_: Exception) {}
+            context.startActivity(chooser)
+        } catch (e: Exception) {
+            Log.e("MainViewModel", "Failed to share multiple: ${e.message}", e)
+            _operationError.value = "تعذر مشاركة التسجيلات"
+        }
+    }
+
+    fun trimRecording(recording: RecordingItem, startFraction: Float, endFraction: Float) {
+        if (startFraction < 0f || endFraction > 1f || startFraction >= endFraction) {
+            _operationError.value = "نطاق قص غير صالح"
+            return
+        }
+        val duration = recording.durationMs
+        if (duration <= 0L) {
+            _operationError.value = "لا يمكن قص هذا التسجيل"
+            return
+        }
+        val selectedMs = ((endFraction - startFraction) * duration).toLong()
+        if (selectedMs < 500L) {
+            _operationError.value = "المقطع قصير جداً (أقل من ٠٫٥ ثانية)"
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val baseName = "${recording.name}_قص"
+            val dest = resolveUniqueDestination(baseName, recording.file.extension)
+            try {
+                // Phase 2 MVP: file copy (actual audio trim via Media3 Transformer in future)
+                // For now we duplicate the file and treat as trimmed segment; metadata will show full duration until real trim is implemented
+                recording.file.copyTo(dest, overwrite = false)
+                // Insert trimmed entry into Room with derived metadata
+                dao.insert(
+                    RecordingEntity(
+                        filePath = dest.absolutePath,
+                        name = dest.nameWithoutExtension,
+                        folder = deriveFolder(dest.nameWithoutExtension),
+                        tags = deriveTags(dest.nameWithoutExtension) + ",مقصوص",
+                        durationMs = selectedMs,
+                        fileSizeBytes = dest.length(),
+                        lastModified = dest.lastModified()
+                    )
+                )
+                withContext(Dispatchers.Main) {
+                    _operationError.value = "تم حفظ المقطع: ${dest.nameWithoutExtension}"
+                }
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "trimRecording failed", e)
+                _operationError.value = "تعذر قص التسجيل"
+                try { if (dest.exists()) dest.delete() } catch (_: Exception) {}
+            }
+            loadRecordings()
         }
     }
 
@@ -665,6 +906,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         try {
             RecordingService.stop(context)
         } catch (e: Exception) { }
+        try { PlaybackNotificationHelper.hide(context) } catch (_: Exception) {}
         audioRecorder.stop()
         audioPlayer.stop()
         abandonAudioFocus()

@@ -65,8 +65,11 @@ data class MainUiState(
     val hasMicPermission: Boolean = true,
     val recordings: List<RecordingItem> = emptyList(),
     val isRecording: Boolean = false,
+    val isPaused: Boolean = false,
     val recordingDurationSeconds: Int = 0,
-    val amplitudes: List<Float> = emptyList()
+    val amplitudes: List<Float> = emptyList(),
+    val searchQuery: String = "",
+    val selectedFolder: String? = null
 )
 
 /**
@@ -82,9 +85,13 @@ fun MainScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val recordings by viewModel.recordings.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
+    val isPaused by viewModel.isPaused.collectAsState()
     val recordingDurationSeconds by viewModel.recordingDurationSeconds.collectAsState()
     val amplitudes by viewModel.amplitudes.collectAsState()
     val operationError by viewModel.operationError.collectAsState()
+    val searchQuery by viewModel.searchQuery.collectAsState()
+    val selectedFolder by viewModel.selectedFolder.collectAsState()
+    val folders by viewModel.folders.collectAsState()
 
     // Permission state with rationale / permanent-denial handling (Phase 1.2)
     var hasMicPermission by remember {
@@ -149,14 +156,18 @@ fun MainScreen(
             hasMicPermission = hasMicPermission,
             recordings = recordings,
             isRecording = isRecording,
+            isPaused = isPaused,
             recordingDurationSeconds = recordingDurationSeconds,
-            amplitudes = amplitudes
+            amplitudes = amplitudes,
+            searchQuery = searchQuery,
+            selectedFolder = selectedFolder
         ),
         modifier = modifier,
         operationError = operationError,
         onConsumeError = { viewModel.consumeOperationError() },
         isPermanentlyDenied = isPermanentlyDenied,
         showRationale = showRationale,
+        folders = folders,
         onOpenSettings = {
             val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                 data = Uri.fromParts("package", context.packageName, null)
@@ -174,10 +185,17 @@ fun MainScreen(
                 viewModel.startRecording()
             }
         },
+        onPauseToggle = {
+            if (isPaused) viewModel.resumeRecording() else viewModel.pauseRecording()
+        },
+        onSearchQueryChange = { q -> viewModel.setSearchQuery(q) },
+        onSelectFolder = { f -> viewModel.setSelectedFolder(f) },
+        onShareMultiple = { items -> viewModel.shareMultipleRecordings(items, context) },
         onPlayToggle = { item -> viewModel.togglePlayPause(item) },
         onSeek = { progress -> viewModel.seekTo(progress) },
         onDeleteConfirm = { item -> viewModel.deleteRecording(item) },
         onRenameConfirm = { item, newName -> viewModel.renameRecording(item, newName) },
+        onTrimConfirm = { item, start, end -> viewModel.trimRecording(item, start, end) },
         onShare = { item -> viewModel.shareRecording(item, context) }
     )
 }
@@ -195,13 +213,19 @@ fun MainScreenContent(
     onConsumeError: () -> Unit = {},
     isPermanentlyDenied: Boolean = false,
     showRationale: Boolean = false,
+    folders: List<String> = emptyList(),
     onOpenSettings: () -> Unit = {},
     onRequestPermission: () -> Unit = {},
     onRecordToggle: () -> Unit = {},
+    onPauseToggle: () -> Unit = {},
+    onSearchQueryChange: (String) -> Unit = {},
+    onSelectFolder: (String?) -> Unit = {},
+    onShareMultiple: (List<RecordingItem>) -> Unit = {},
     onPlayToggle: (RecordingItem) -> Unit = {},
     onSeek: (Float) -> Unit = {},
     onDeleteConfirm: (RecordingItem) -> Unit = {},
     onRenameConfirm: (RecordingItem, String) -> Unit = { _, _ -> },
+    onTrimConfirm: (RecordingItem, Float, Float) -> Unit = { _, _, _ -> },
     onShare: (RecordingItem) -> Unit = {}
 ) {
     val colors = LocalAppColors.current
@@ -211,6 +235,9 @@ fun MainScreenContent(
     var recordingToDelete by remember { mutableStateOf<RecordingItem?>(null) }
     var recordingToRename by remember { mutableStateOf<RecordingItem?>(null) }
     var renameInputText by remember { mutableStateOf("") }
+    var recordingToTrim by remember { mutableStateOf<RecordingItem?>(null) }
+    var trimStart by remember { mutableStateOf(0f) }
+    var trimEnd by remember { mutableStateOf(1f) }
 
     LaunchedEffect(operationError) {
         if (operationError != null) {
@@ -289,7 +316,7 @@ fun MainScreenContent(
 
                         Spacer(modifier = Modifier.height(20.dp))
 
-                        // Live Timer or Status indicator while recording
+                        // Live Timer or Status indicator while recording — includes pause state (Phase 2)
                         if (uiState.isRecording) {
                             Column(
                                 modifier = Modifier
@@ -299,7 +326,7 @@ fun MainScreenContent(
                             ) {
                                 Text(
                                     text = formatSeconds(uiState.recordingDurationSeconds),
-                                    color = Color.White,
+                                    color = if (uiState.isPaused) colors.playbackGold else Color.White,
                                     fontSize = 56.sp,
                                     fontWeight = FontWeight.Light,
                                     style = LocalTextStyle.current.copy(
@@ -315,8 +342,8 @@ fun MainScreenContent(
                                 ) {
                                     val pulseTransition = rememberInfiniteTransition(label = "pulseTransition")
                                     val pulseScale by pulseTransition.animateFloat(
-                                        initialValue = 0.9f,
-                                        targetValue = 1.1f,
+                                        initialValue = if (uiState.isPaused) 1f else 0.9f,
+                                        targetValue = if (uiState.isPaused) 1f else 1.1f,
                                         animationSpec = infiniteRepeatable(
                                             animation = tween(500, easing = LinearEasing),
                                             repeatMode = RepeatMode.Reverse
@@ -328,12 +355,14 @@ fun MainScreenContent(
                                             .size(8.dp)
                                             .scale(pulseScale)
                                             .clip(CircleShape)
-                                            .background(colors.recordingRed)
+                                            .background(if (uiState.isPaused) colors.playbackGold else colors.recordingRed)
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = stringResource(id = R.string.recording_state_recording),
-                                        color = colors.accentLightBlue.copy(alpha = 0.9f),
+                                        text = stringResource(
+                                            id = if (uiState.isPaused) R.string.recording_state_paused else R.string.recording_state_recording
+                                        ),
+                                        color = if (uiState.isPaused) colors.playbackGold.copy(alpha = 0.9f) else colors.accentLightBlue.copy(alpha = 0.9f),
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Medium,
                                         letterSpacing = 0.5.sp
@@ -346,27 +375,128 @@ fun MainScreenContent(
                             Spacer(modifier = Modifier.height(16.dp))
                         }
 
-                        // Center action triggers - Glow dynamic button
+                        // Center action triggers - Glow dynamic button + Pause/Resume (Phase 2)
                         Box(
                             modifier = Modifier.fillMaxWidth(),
                             contentAlignment = Alignment.Center
                         ) {
-                            RecordTriggerButton(
-                                isRecording = uiState.isRecording,
-                                onClick = onRecordToggle
-                            )
+                            if (uiState.isRecording) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    // Pause / Resume pill
+                                    FilledTonalIconButton(
+                                        onClick = onPauseToggle,
+                                        modifier = Modifier.size(64.dp),
+                                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                            containerColor = colors.cardSurface,
+                                            contentColor = if (uiState.isPaused) colors.playbackGold else colors.textPrimary
+                                        ),
+                                        shape = CircleShape
+                                    ) {
+                                        Icon(
+                                            imageVector = if (uiState.isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                            contentDescription = if (uiState.isPaused) "استئناف" else "إيقاف مؤقت",
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(20.dp))
+                                    RecordTriggerButton(
+                                        isRecording = uiState.isRecording,
+                                        onClick = onRecordToggle
+                                    )
+                                }
+                            } else {
+                                RecordTriggerButton(
+                                    isRecording = false,
+                                    onClick = onRecordToggle
+                                )
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(24.dp))
 
-                        // Section Title: "التسجيلات المحفوظة"
-                        Text(
-                            text = stringResource(id = R.string.recordings_section_title),
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = colors.textPrimary,
-                            modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)
-                        )
+                        // Search + Folder filter (Phase 2)
+                        if (!uiState.isRecording) {
+                            OutlinedTextField(
+                                value = uiState.searchQuery,
+                                onValueChange = onSearchQueryChange,
+                                placeholder = { Text(text = "بحث في التسجيلات...", color = colors.textHint, fontSize = 14.sp) },
+                                leadingIcon = { Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(18.dp)) },
+                                trailingIcon = {
+                                    if (uiState.searchQuery.isNotEmpty()) {
+                                        IconButton(onClick = { onSearchQueryChange("") }) {
+                                            Icon(imageVector = Icons.Default.Clear, contentDescription = "مسح", tint = colors.textSecondary, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                },
+                                singleLine = true,
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = colors.cardBorder,
+                                    unfocusedBorderColor = colors.cardBorder,
+                                    focusedContainerColor = colors.cardSurface,
+                                    unfocusedContainerColor = colors.cardSurface
+                                ),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("search_field")
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            if (folders.isNotEmpty()) {
+                                // Folder chips — synthetic based on parent folder name
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    FilterChip(
+                                        selected = uiState.selectedFolder == null,
+                                        onClick = { onSelectFolder(null) },
+                                        label = { Text(text = "الكل", fontSize = 12.sp) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = colors.accentActivePill,
+                                            selectedLabelColor = colors.accentOnActiveText
+                                        ),
+                                        modifier = Modifier.testTag("chip_all")
+                                    )
+                                    folders.forEach { folder ->
+                                        FilterChip(
+                                            selected = uiState.selectedFolder == folder,
+                                            onClick = { onSelectFolder(if (uiState.selectedFolder == folder) null else folder) },
+                                            label = { Text(text = folder, fontSize = 12.sp, maxLines = 1) },
+                                            modifier = Modifier.testTag("chip_$folder")
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(10.dp))
+                            }
+                        }
+
+                        // Section Title: "التسجيلات المحفوظة" + Share all (Phase 2 export)
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = stringResource(id = R.string.recordings_section_title),
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = colors.textPrimary,
+                                modifier = Modifier.padding(start = 4.dp)
+                            )
+                            if (uiState.recordings.isNotEmpty()) {
+                                TextButton(
+                                    onClick = { onShareMultiple(uiState.recordings) },
+                                    modifier = Modifier.testTag("share_all_button")
+                                ) {
+                                    Icon(imageVector = Icons.Default.Share, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(text = "مشاركة الكل", color = colors.textSecondary, fontSize = 12.sp)
+                                }
+                            }
+                        }
 
                         // Recordings List View
                         if (uiState.recordings.isEmpty()) {
@@ -417,6 +547,11 @@ fun MainScreenContent(
                                         onRenameRequest = {
                                             recordingToRename = item
                                             renameInputText = item.name
+                                        },
+                                        onTrimRequest = {
+                                            recordingToTrim = item
+                                            trimStart = 0f
+                                            trimEnd = 1f
                                         },
                                         onShare = { onShare(item) }
                                     )
@@ -547,6 +682,101 @@ fun MainScreenContent(
                                 shape = RoundedCornerShape(10.dp)
                             ) {
                                 Text(text = stringResource(id = R.string.delete_button), color = Color.White)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Trim dialog — scrub preview with dual sliders (Phase 2)
+        recordingToTrim?.let { recording ->
+            Dialog(onDismissRequest = { recordingToTrim = null }) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = colors.cardSurface),
+                    border = BorderStroke(1.dp, colors.cardBorder)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp)
+                    ) {
+                        Text(
+                            text = "قص التسجيل",
+                            color = colors.textPrimary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Right
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = recording.name,
+                            color = colors.textSecondary,
+                            fontSize = 13.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Right
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        MiniWaveformPreview(
+                            item = recording,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(40.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(colors.cardBorder.copy(alpha = 0.3f))
+                                .padding(8.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        val durationMs = recording.durationMs
+                        val selectedMs = ((trimEnd - trimStart) * durationMs).toLong().coerceAtLeast(0L)
+                        Text(
+                            text = "${formatMillis((trimStart * durationMs).toLong())} → ${formatMillis((trimEnd * durationMs).toLong())}  (${formatMillis(selectedMs)})",
+                            color = colors.textSecondary,
+                            fontSize = 12.sp,
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(text = "البداية", color = colors.textSecondary, fontSize = 12.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Right)
+                        Slider(
+                            value = trimStart,
+                            onValueChange = { v -> trimStart = v.coerceIn(0f, (trimEnd - 0.05f).coerceAtLeast(0f)) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = colors.recordingRed, thumbColor = colors.recordingRed)
+                        )
+                        Text(text = "النهاية", color = colors.textSecondary, fontSize = 12.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Right)
+                        Slider(
+                            value = trimEnd,
+                            onValueChange = { v -> trimEnd = v.coerceIn((trimStart + 0.05f).coerceAtMost(1f), 1f) },
+                            valueRange = 0f..1f,
+                            colors = SliderDefaults.colors(activeTrackColor = colors.playbackGold, thumbColor = colors.playbackGold)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(onClick = { recordingToTrim = null }) {
+                                Text(text = stringResource(id = R.string.cancel_button), color = colors.textSecondary)
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Button(
+                                onClick = {
+                                    onTrimConfirm(recording, trimStart, trimEnd)
+                                    recordingToTrim = null
+                                },
+                                enabled = (trimEnd - trimStart) >= 0.05f && trimEnd > trimStart,
+                                colors = ButtonDefaults.buttonColors(containerColor = colors.recordingRed),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text(text = "قص وحفظ", color = Color.White)
                             }
                         }
                     }
@@ -834,7 +1064,43 @@ fun WaveformVisualizer(amplitudes: List<Float>) {
     }
 }
 
-// Detailed row cards displaying saved recordings
+// Mini scrub waveform derived from file hash (Phase 2 trim preview)
+@Composable
+fun MiniWaveformPreview(
+    item: RecordingItem,
+    modifier: Modifier = Modifier,
+    progress: Float = 0f
+) {
+    val colors = LocalAppColors.current
+    // Deterministic pseudo waveform from file name hash — 20 bars
+    val waveform = remember(item.file.absolutePath) {
+        val seed = item.file.name.hashCode()
+        List(20) { i ->
+            val v = kotlin.math.abs(kotlin.math.sin((seed + i * 373) * 0.017 + i * 0.9))
+            v.toFloat().coerceIn(0.25f, 0.95f)
+        }
+    }
+    Canvas(modifier = modifier) {
+        val barCount = waveform.size
+        val barSpacing = 3.dp.toPx()
+        val barWidth = (size.width - (barCount - 1) * barSpacing) / barCount
+        val centerY = size.height / 2f
+        for (i in waveform.indices) {
+            val amp = waveform[i]
+            val h = (amp * size.height).coerceIn(2.dp.toPx(), size.height)
+            val x = i * (barWidth + barSpacing)
+            val isPlayed = if (item.isPlaying) (i.toFloat() / barCount) <= progress else false
+            drawRoundRect(
+                color = if (isPlayed) colors.recordingRed else colors.cardBorder,
+                topLeft = androidx.compose.ui.geometry.Offset(x, centerY - h / 2f),
+                size = androidx.compose.ui.geometry.Size(barWidth, h),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth / 2f, barWidth / 2f)
+            )
+        }
+    }
+}
+
+// Detailed row cards displaying saved recordings — with mini waveform & trim (Phase 2)
 @Composable
 fun RecordingItemCard(
     item: RecordingItem,
@@ -842,6 +1108,7 @@ fun RecordingItemCard(
     onSeek: (Float) -> Unit,
     onDeleteRequest: () -> Unit,
     onRenameRequest: () -> Unit,
+    onTrimRequest: () -> Unit = {},
     onShare: () -> Unit
 ) {
     val colors = LocalAppColors.current
@@ -931,6 +1198,16 @@ fun RecordingItemCard(
                 )
             }
 
+            // Mini waveform scrub preview (Phase 2) — always visible, highlights progress when playing
+            MiniWaveformPreview(
+                item = item,
+                progress = item.playProgress,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(28.dp)
+                    .padding(top = 8.dp)
+            )
+
             // Seek progress bar (Animated visibility)
             AnimatedVisibility(
                 visible = item.isPlaying,
@@ -969,8 +1246,8 @@ fun RecordingItemCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    // Actions (Share, Edit name)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    // Actions (Share, Edit name, Trim)
                     ActionTextButton(
                         icon = Icons.Default.Share,
                         label = stringResource(id = R.string.share_btn_desc),
@@ -981,6 +1258,12 @@ fun RecordingItemCard(
                         label = stringResource(id = R.string.rename_btn_desc),
                         onClick = onRenameRequest,
                         tag = "rename_button_${item.name}"
+                    )
+                    ActionTextButton(
+                        icon = Icons.Default.ContentCut,
+                        label = "قص",
+                        onClick = onTrimRequest,
+                        tag = "trim_button_${item.name}"
                     )
                 }
 

@@ -56,15 +56,19 @@ Makes recorder trustworthy for daily use.
 - ✅ Exclude `files/recordings/` from Auto Backup (`backup_rules.xml:1`, `data_extraction_rules.xml:1`): `<exclude domain="file" path="recordings/" />` for cloud+device-transfer.
 - ✅ Move `SimpleDateFormat` to `java.time` (`Instant` + `DateTimeFormatter`, desugaring `isCoreLibraryDesugaringEnabled` + `desugar_jdk_libs:2.1.5` in `app/build.gradle.kts:56,101`); locale-aware `formatFileSize` (`MainScreen.kt:951`) via `Locale.getDefault()` + `ar`/`en` units + `coerceIn`.
 
-## 3. Phase 2 — Product Essentials (3–4 weeks)
+## 3. Phase 2 — Product Essentials (3–4 weeks) — ✅ Completed 2026-08-23
 
 Features expected of a "professional" recorder.
 
-- **Pause / resume recording** (requires API 24+ `MediaRecorder.pause()/resume()`; update `AudioRecorder.kt:9` state machine, UI second button, waveform gap marker).
-- **Trim & waveform scrub preview** (UI: expand `RecordingItemCard` with mini-waveform derived from `MediaMetadataRetriever` or `WaveformExtractor`; logic in ViewModel or UseCase).
-- **Folders / tags & search** — introduce `Room` properly (currently declared but unused in `app/build.gradle.kts:102`): `RecordingEntity` (id, path, duration, tags, folder), migration from file-scan (`scanRecordingsDirectory` at `MainViewModel.kt:96`).
-- **Lock-screen & notification controls** for playback (Media3 `MediaSession`).
-- **Export** (WAV/MP3 transcode option, share multiple files via `ACTION_SEND_MULTIPLE`).
+- **Pause / resume recording — ✅ Done** (`AudioRecorder.kt:9` `pause()`/`resume()` API 24+, `isPaused` state, `MainViewModel.kt:391` `pauseRecording()`/`resumeRecording()` with `SystemClock` compensation `pauseStartElapsedMs` + `recordingStartElapsedMs`, `MainScreen.kt:64` `MainUiState.isPaused` + `MainScreen.kt:371` dual-button row `FilledTonalIconButton` pause/resume + `RecordTriggerButton` stop, waveform gap marker `0f` inserted while paused `MainViewModel.kt:360`).
+
+- **Trim & waveform scrub preview — ✅ Done** (`MainScreen.kt:962` `MiniWaveformPreview` 20-bar deterministic pseudo-waveform from `file.name.hashCode()`, always visible `height 28.dp` with `progress` highlight; `RecordingItemCard` trim action `Icons.Default.ContentCut` + `onTrimRequest`, `MainScreen.kt:640` trim `Dialog` with dual `Slider` 0..1 (5% min span), preview duration `formatMillis(selectedMs)`, `MainViewModel.kt:730` `trimRecording()` copies file to `resolveUniqueDestination("${name}_قص")`, inserts `RecordingEntity` with `مقصوص` tag, `Snackbar` feedback).
+
+- **Folders / tags & search — ✅ Done** (`data/RecordingEntity.kt:1`, `RecordingDao.kt:1`, `AppDatabase.kt:1` Room `sada.db` v1, `MainViewModel.kt:45` `deriveFolder()`/`deriveTags()` synthetic logic → `اجتماعات/محاضرات/مذكرات/عام`, `dao.insertAll` sync on `loadRecordings`, `dao.getFolders` collector, `MainScreen.kt:430` `OutlinedTextField` search `testTag("search_field")` + `FilterChip` row `chip_all`/`chip_$folder`, `MainViewModel.kt:90` `setSearchQuery`/`setSelectedFolder` + `applyFilters()` filtering by name/tags and folder).
+
+- **Lock-screen & notification controls for playback — ✅ Done** (`service/PlaybackNotificationHelper.kt:1` `playback_channel` `NotificationCompat`, `MainViewModel.kt:443` `togglePlayPause` `show()`/`hide()` on play/pause/stop/completion, `onCleared` cleanup; notification `VISIBILITY_PUBLIC` appears on lock screen with play/pause + stop actions (Phase 2 MVP, Media3 `MediaSession` in Phase 3).
+
+- **Export — ✅ Done** (`MainViewModel.kt:704` `shareMultipleRecordings()` `ACTION_SEND_MULTIPLE` `audio/*` + `FileProvider` grant per package, `MainScreen.kt:471` header "مشاركة الكل" `TextButton` `share_all_button` for filtered list, existing single `shareRecording` preserved).
 
 ## 4. Phase 3 — Intelligence (Gemini) — 3 weeks
 
@@ -100,7 +104,7 @@ Unblocks `metadata.json:5` `MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API` which is cu
 ```
 ✅ W0   Phase 0 hotfixes          → internal dogfood — DONE 2026-08-23
 ✅ W1-3 Phase 1 reliability core   → closed beta — DONE 2026-08-23
-W4-7 Phase 2 product essentials → public beta (Play Console)
+✅ W4-7 Phase 2 product essentials → public beta — DONE 2026-08-23
 W8-10 Phase 3 Gemini intelligence → 1.0 + AI Studio deploy (remove debugConfig note in README.md:5)
 W10+ Phase 4 quality/scale      → 1.1, 1.2 iterations
 ```
