@@ -18,12 +18,15 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -52,6 +55,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.example.R
+import com.example.data.TranscriptEntity
 import com.example.model.RecordingItem
 import com.example.ui.theme.LocalAppColors
 import com.example.viewmodel.MainViewModel
@@ -92,6 +96,10 @@ fun MainScreen(
     val searchQuery by viewModel.searchQuery.collectAsState()
     val selectedFolder by viewModel.selectedFolder.collectAsState()
     val folders by viewModel.folders.collectAsState()
+    val aiOptIn by viewModel.aiOptIn.collectAsState()
+    val aiProcessing by viewModel.aiProcessing.collectAsState()
+    val transcripts by viewModel.transcripts.collectAsState()
+    val selectedTranscript by viewModel.selectedTranscript.collectAsState()
 
     // Permission state with rationale / permanent-denial handling (Phase 1.2)
     var hasMicPermission by remember {
@@ -196,7 +204,25 @@ fun MainScreen(
         onDeleteConfirm = { item -> viewModel.deleteRecording(item) },
         onRenameConfirm = { item, newName -> viewModel.renameRecording(item, newName) },
         onTrimConfirm = { item, start, end -> viewModel.trimRecording(item, start, end) },
-        onShare = { item -> viewModel.shareRecording(item, context) }
+        onShare = { item -> viewModel.shareRecording(item, context) },
+        aiOptIn = aiOptIn,
+        aiProcessing = aiProcessing,
+        transcripts = transcripts,
+        selectedTranscript = selectedTranscript,
+        onToggleAiOptIn = { viewModel.setAiOptIn(it) },
+        onRequestTranscription = { item -> viewModel.requestTranscription(item) },
+        onDismissTranscript = { viewModel.clearSelectedTranscript() },
+        onCopyTranscript = { text ->
+            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("transcript", text))
+        },
+        onShareTranscript = { text ->
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            context.startActivity(Intent.createChooser(intent, "مشاركة النسخ").apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) })
+        }
     )
 }
 
@@ -204,7 +230,7 @@ fun MainScreen(
  * Stateless renderer of the main screen (RTL layout representing Arabic
  * engineering guidelines). Safe to preview and screenshot-test in isolation.
  */
-@OptIn(ExperimentalAnimationApi::class)
+@OptIn(ExperimentalAnimationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreenContent(
     uiState: MainUiState,
@@ -226,7 +252,16 @@ fun MainScreenContent(
     onDeleteConfirm: (RecordingItem) -> Unit = {},
     onRenameConfirm: (RecordingItem, String) -> Unit = { _, _ -> },
     onTrimConfirm: (RecordingItem, Float, Float) -> Unit = { _, _, _ -> },
-    onShare: (RecordingItem) -> Unit = {}
+    onShare: (RecordingItem) -> Unit = {},
+    aiOptIn: Boolean = false,
+    aiProcessing: Set<String> = emptySet(),
+    transcripts: Map<String, TranscriptEntity> = emptyMap(),
+    selectedTranscript: TranscriptEntity? = null,
+    onToggleAiOptIn: (Boolean) -> Unit = {},
+    onRequestTranscription: (RecordingItem) -> Unit = {},
+    onDismissTranscript: () -> Unit = {},
+    onCopyTranscript: (String) -> Unit = {},
+    onShareTranscript: (String) -> Unit = {}
 ) {
     val colors = LocalAppColors.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -238,6 +273,7 @@ fun MainScreenContent(
     var recordingToTrim by remember { mutableStateOf<RecordingItem?>(null) }
     var trimStart by remember { mutableStateOf(0f) }
     var trimEnd by remember { mutableStateOf(1f) }
+    var showAiConsent by remember { mutableStateOf(false) }
 
     LaunchedEffect(operationError) {
         if (operationError != null) {
@@ -257,7 +293,13 @@ fun MainScreenContent(
             containerColor = colors.background,
             snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             topBar = {
-                HeaderSection()
+                HeaderSection(
+                    aiOptIn = aiOptIn,
+                    aiProcessingCount = aiProcessing.size,
+                    onAiClick = {
+                        if (!aiOptIn) showAiConsent = true else onToggleAiOptIn(false)
+                    }
+                )
             }
         ) { paddingValues ->
             Box(
@@ -278,6 +320,64 @@ fun MainScreenContent(
                             .fillMaxSize()
                             .padding(horizontal = 20.dp)
                     ) {
+                        // AI opt-in banner (Phase 3) — consent, status, processing
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp),
+                            colors = CardDefaults.cardColors(containerColor = if (aiOptIn) colors.accentActivePill.copy(alpha = 0.15f) else colors.cardSurface),
+                            border = BorderStroke(1.dp, if (aiOptIn) colors.accentActivePill else colors.cardBorder),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = if (aiOptIn) "الذكاء الاصطناعي مفعّل ✓" else "فعّل الذكاء الاصطناعي",
+                                        color = colors.textPrimary,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = if (aiOptIn) {
+                                            if (aiProcessing.isNotEmpty()) "جاري معالجة ${aiProcessing.size} تسجيلات..."
+                                            else "سيتم نسخ التسجيلات وتلخيصها تلقائياً"
+                                        } else "نسخ عربي، تلخيص، واستخراج مهام — يتطلب موافقتك",
+                                        color = colors.textSecondary,
+                                        fontSize = 12.sp,
+                                        lineHeight = 16.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                if (aiOptIn) {
+                                    if (aiProcessing.isNotEmpty()) {
+                                        CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp, color = colors.accentActivePill)
+                                    } else {
+                                        Switch(
+                                            checked = true,
+                                            onCheckedChange = { onToggleAiOptIn(false) },
+                                            colors = SwitchDefaults.colors(checkedThumbColor = colors.accentActivePill, checkedTrackColor = colors.accentActivePill.copy(alpha = 0.5f))
+                                        )
+                                    }
+                                } else {
+                                    Button(
+                                        onClick = { showAiConsent = true },
+                                        colors = ButtonDefaults.buttonColors(containerColor = colors.accentActivePill, contentColor = colors.accentOnActiveText),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.testTag("ai_enable_button")
+                                    ) {
+                                        Text(text = "تفعيل", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                    }
+                                }
+                            }
+                        }
+
                         // Amplitude visualizer or beautiful idle greeting card
                         Box(
                             modifier = Modifier
@@ -539,6 +639,8 @@ fun MainScreenContent(
                                     items = uiState.recordings,
                                     key = { it.file.absolutePath }
                                 ) { item ->
+                                    val transcriptExists = transcripts.containsKey(item.file.absolutePath)
+                                    val isTranscribing = aiProcessing.contains(item.file.absolutePath)
                                     RecordingItemCard(
                                         item = item,
                                         onPlayToggle = { onPlayToggle(item) },
@@ -553,6 +655,9 @@ fun MainScreenContent(
                                             trimStart = 0f
                                             trimEnd = 1f
                                         },
+                                        onAiRequest = { onRequestTranscription(item) },
+                                        hasTranscript = transcriptExists,
+                                        isTranscribing = isTranscribing,
                                         onShare = { onShare(item) }
                                     )
                                 }
@@ -783,12 +888,112 @@ fun MainScreenContent(
                 }
             }
         }
+
+        // AI consent dialog (Phase 3)
+        if (showAiConsent) {
+            AlertDialog(
+                onDismissRequest = { showAiConsent = false },
+                title = { Text(text = "تفعيل الذكاء الاصطناعي؟", fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Right) },
+                text = {
+                    Text(
+                        text = "سيتم إرسال التسجيل إلى Gemini لنسخه وتلخيصه واستخراج المهام. التسجيل يبقى على جهازك ولا يُخزن بدون موافقتك. يمكنك إيقاف الميزة في أي وقت عبر الشريط العلوي.",
+                        color = colors.textSecondary,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp,
+                        textAlign = TextAlign.Right
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { onToggleAiOptIn(true); showAiConsent = false },
+                        colors = ButtonDefaults.buttonColors(containerColor = colors.accentActivePill)
+                    ) { Text(text = "موافق، فعّل", color = colors.accentOnActiveText) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showAiConsent = false }) { Text(text = "إلغاء", color = colors.textSecondary) }
+                },
+                containerColor = colors.cardSurface,
+                shape = RoundedCornerShape(20.dp)
+            )
+        }
+
+        // Transcript bottom sheet (Phase 3) — inline sheet with copy/share
+        selectedTranscript?.let { tr ->
+            ModalBottomSheet(
+                onDismissRequest = onDismissTranscript,
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                containerColor = colors.cardSurface,
+                contentColor = colors.textPrimary,
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp)
+                        .padding(bottom = 32.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(text = tr.titleSuggestion.ifBlank { "النسخ والتلخيص" }, color = colors.textPrimary, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                        IconButton(onClick = onDismissTranscript) { Icon(imageVector = Icons.Default.Close, contentDescription = "إغلاق", tint = colors.textSecondary) }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    // Transcript
+                    Text(text = "النص المنسوخ", color = colors.playbackGold, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Card(colors = CardDefaults.cardColors(containerColor = colors.background), border = BorderStroke(1.dp, colors.cardBorder), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                        Text(text = tr.transcript.ifBlank { "لا يوجد نص" }, color = colors.textPrimary, fontSize = 14.sp, lineHeight = 20.sp, modifier = Modifier.padding(12.dp))
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(text = "الملخص", color = colors.playbackGold, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Card(colors = CardDefaults.cardColors(containerColor = colors.background), border = BorderStroke(1.dp, colors.cardBorder), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                        Text(text = tr.summary.ifBlank { "—" }, color = colors.textSecondary, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(12.dp))
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(text = "بنود العمل", color = colors.playbackGold, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Card(colors = CardDefaults.cardColors(containerColor = colors.background), border = BorderStroke(1.dp, colors.cardBorder), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                        Text(text = tr.actionItems.ifBlank { "لا توجد بنود عمل واضحة." }, color = colors.textSecondary, fontSize = 13.sp, lineHeight = 18.sp, modifier = Modifier.padding(12.dp))
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(
+                            onClick = { onCopyTranscript(tr.transcript + "\n\n" + tr.summary) },
+                            modifier = Modifier.weight(1f),
+                            border = BorderStroke(1.dp, colors.cardBorder)
+                        ) {
+                            Icon(imageVector = Icons.Default.ContentCopy, contentDescription = null, tint = colors.textSecondary, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(text = "نسخ", color = colors.textSecondary)
+                        }
+                        Button(
+                            onClick = { onShareTranscript(tr.transcript + "\n\n" + tr.summary + "\n\n" + tr.actionItems) },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.accentActivePill, contentColor = colors.accentOnActiveText)
+                        ) {
+                            Icon(imageVector = Icons.Default.Share, contentDescription = null, tint = colors.accentOnActiveText, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(text = "مشاركة")
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
-// App Header Section
+// App Header Section — badge tappable for AI (Phase 3)
 @Composable
-fun HeaderSection() {
+fun HeaderSection(
+    aiOptIn: Boolean = false,
+    aiProcessingCount: Int = 0,
+    onAiClick: () -> Unit = {}
+) {
     val colors = LocalAppColors.current
     Row(
         modifier = Modifier
@@ -814,12 +1019,13 @@ fun HeaderSection() {
             )
         }
         
-        // Aesthetic Brand Badge or Micro-indicator
+        // Aesthetic Brand Badge — tappable, reflects AI state + processing
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(30.dp))
-                .background(colors.cardSurface)
-                .border(1.dp, colors.cardBorder, RoundedCornerShape(30.dp))
+                .background(if (aiOptIn) colors.accentActivePill else colors.cardSurface)
+                .border(1.dp, if (aiOptIn) colors.accentActivePill else colors.cardBorder, RoundedCornerShape(30.dp))
+                .clickable(onClick = onAiClick)
                 .padding(horizontal = 14.dp, vertical = 6.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -827,15 +1033,19 @@ fun HeaderSection() {
                     modifier = Modifier
                         .size(6.dp)
                         .clip(CircleShape)
-                        .background(colors.playbackGold)
+                        .background(if (aiOptIn) colors.accentOnActiveText else colors.playbackGold)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = stringResource(id = R.string.smart_badge_label),
-                    color = colors.playbackGold,
+                    text = if (aiProcessingCount > 0) "جاري المعالجة ($aiProcessingCount)" else stringResource(id = R.string.smart_badge_label),
+                    color = if (aiOptIn) colors.accentOnActiveText else colors.playbackGold,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold
                 )
+                if (aiOptIn) {
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = colors.accentOnActiveText, modifier = Modifier.size(12.dp))
+                }
             }
         }
     }
@@ -1100,7 +1310,7 @@ fun MiniWaveformPreview(
     }
 }
 
-// Detailed row cards displaying saved recordings — with mini waveform & trim (Phase 2)
+// Detailed row cards displaying saved recordings — with mini waveform & trim (Phase 2) + AI (Phase 3)
 @Composable
 fun RecordingItemCard(
     item: RecordingItem,
@@ -1109,6 +1319,9 @@ fun RecordingItemCard(
     onDeleteRequest: () -> Unit,
     onRenameRequest: () -> Unit,
     onTrimRequest: () -> Unit = {},
+    onAiRequest: () -> Unit = {},
+    hasTranscript: Boolean = false,
+    isTranscribing: Boolean = false,
     onShare: () -> Unit
 ) {
     val colors = LocalAppColors.current
@@ -1246,8 +1459,8 @@ fun RecordingItemCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    // Actions (Share, Edit name, Trim)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // Actions (Share, Edit, Trim, AI)
                     ActionTextButton(
                         icon = Icons.Default.Share,
                         label = stringResource(id = R.string.share_btn_desc),
@@ -1264,6 +1477,17 @@ fun RecordingItemCard(
                         label = "قص",
                         onClick = onTrimRequest,
                         tag = "trim_button_${item.name}"
+                    )
+                    ActionTextButton(
+                        icon = if (hasTranscript) Icons.Default.Description else Icons.Default.AutoAwesome,
+                        label = if (isTranscribing) "جاري..." else if (hasTranscript) "عرض النسخ" else "ذكاء",
+                        onClick = onAiRequest,
+                        color = when {
+                            hasTranscript -> colors.accentActivePill
+                            isTranscribing -> colors.textHint
+                            else -> colors.playbackGold
+                        },
+                        tag = "ai_button_${item.name}"
                     )
                 }
 

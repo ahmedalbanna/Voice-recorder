@@ -15,10 +15,13 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.ai.GeminiService
 import com.example.audio.AudioPlayer
 import com.example.audio.AudioRecorder
+import com.example.data.AiPrefs
 import com.example.data.AppDatabase
 import com.example.data.RecordingEntity
+import com.example.data.TranscriptEntity
 import com.example.model.RecordingItem
 import com.example.service.PlaybackNotificationHelper
 import com.example.service.RecordingService
@@ -57,6 +60,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Audio focus (1.1)
     private val db = AppDatabase.get(context)
     private val dao = db.recordingDao()
+    private val transcriptDao = db.transcriptDao()
+    private val aiPrefs = AiPrefs(context)
+    private val gemini = GeminiService()
 
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -224,14 +230,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setSearchQuery(q: String) { _searchQuery.value = q; applyFilters() }
     fun setSelectedFolder(folder: String?) { _selectedFolder.value = folder; applyFilters() }
     private var allRecordingsCache: List<RecordingItem> = emptyList()
+
+    // AI state (Phase 3)
+    private val _aiOptIn = MutableStateFlow(false)
+    val aiOptIn: StateFlow<Boolean> = _aiOptIn.asStateFlow()
+    private val _aiProcessing = MutableStateFlow<Set<String>>(emptySet())
+    val aiProcessing: StateFlow<Set<String>> = _aiProcessing.asStateFlow()
+    private val _transcripts = MutableStateFlow<Map<String, TranscriptEntity>>(emptyMap())
+    val transcripts: StateFlow<Map<String, TranscriptEntity>> = _transcripts.asStateFlow()
+    private val _selectedTranscript = MutableStateFlow<TranscriptEntity?>(null)
+    val selectedTranscript: StateFlow<TranscriptEntity?> = _selectedTranscript.asStateFlow()
+
+    fun setAiOptIn(enabled: Boolean) {
+        viewModelScope.launch { aiPrefs.setAiOptIn(enabled) }
+        _aiOptIn.value = enabled
+        if (!enabled) {
+            // Clear sensitive hint
+            _operationError.value = "تم إيقاف ميزات الذكاء الاصطناعي"
+        } else {
+            _operationError.value = "تم تفعيل الذكاء الاصطناعي — التسجيلات ستُنسخ تلقائياً"
+        }
+    }
+
+    fun selectTranscriptFor(filePath: String) {
+        viewModelScope.launch {
+            val entity = transcriptDao.getByPath(filePath) ?: _transcripts.value[filePath]
+            _selectedTranscript.value = entity
+        }
+    }
+
+    fun clearSelectedTranscript() { _selectedTranscript.value = null }
+
     private fun applyFilters() {
         val query = _searchQuery.value.trim().lowercase(Locale.getDefault())
         val folder = _selectedFolder.value
         var list = allRecordingsCache
         if (query.isNotEmpty()) {
+            // Keyword search over name, tags, and transcripts (Phase 3)
             list = list.filter {
                 it.name.lowercase(Locale.getDefault()).contains(query) ||
-                    deriveTags(it.name).lowercase(Locale.getDefault()).contains(query)
+                    deriveTags(it.name).lowercase(Locale.getDefault()).contains(query) ||
+                    _transcripts.value[it.file.absolutePath]?.let { tr ->
+                        tr.transcript.lowercase(Locale.getDefault()).contains(query) ||
+                            tr.summary.lowercase(Locale.getDefault()).contains(query) ||
+                            tr.actionItems.lowercase(Locale.getDefault()).contains(query) ||
+                            tr.titleSuggestion.lowercase(Locale.getDefault()).contains(query)
+                    } == true
             }
         }
         if (folder != null) {
@@ -286,6 +330,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (dbFolders.isNotEmpty()) {
                     _folders.value = dbFolders
                 }
+            }
+        }
+        // AI opt-in + transcripts (Phase 3)
+        viewModelScope.launch {
+            aiPrefs.aiOptIn.collect { _aiOptIn.value = it }
+        }
+        viewModelScope.launch {
+            transcriptDao.getAll().collect { list ->
+                _transcripts.value = list.associateBy { it.filePath }
+                // Re-apply filters so keyword search over transcripts updates live
+                if (_searchQuery.value.isNotEmpty()) applyFilters()
             }
         }
     }
@@ -527,7 +582,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         abandonAudioFocus()
 
+        val justRecordedFile = activeRecordingFile
+        activeRecordingFile = null
         loadRecordings()
+        // Auto-transcribe if AI opt-in (Phase 3)
+        if (justRecordedFile != null && justRecordedFile.exists() && _aiOptIn.value) {
+            viewModelScope.launch {
+                delay(600)
+                val item = RecordingItem(
+                    file = justRecordedFile,
+                    name = justRecordedFile.nameWithoutExtension,
+                    dateString = "",
+                    durationMs = 0L,
+                    fileSizeBytes = justRecordedFile.length()
+                )
+                requestTranscription(item)
+            }
+        }
     }
 
     // Playback Logic — with lock-screen notification (Phase 2)
@@ -705,10 +776,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _operationError.value = "تعذر حذف التسجيل"
                     } else {
                         try { dao.deleteByPath(recording.file.absolutePath) } catch (_: Exception) {}
+                        try { transcriptDao.deleteByPath(recording.file.absolutePath) } catch (_: Exception) {}
                     }
                 } else {
                     _operationError.value = "الملف غير موجود"
                     try { dao.deleteByPath(recording.file.absolutePath) } catch (_: Exception) {}
+                    try { transcriptDao.deleteByPath(recording.file.absolutePath) } catch (_: Exception) {}
                 }
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Failed to delete file", e)
@@ -779,6 +852,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         try {
                             dao.deleteByPath(recording.file.absolutePath)
+                            transcriptDao.deleteByPath(recording.file.absolutePath)
                             val newItem = RecordingItem(
                                 file = destFile,
                                 name = destFile.nameWithoutExtension,
@@ -898,6 +972,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 try { if (dest.exists()) dest.delete() } catch (_: Exception) {}
             }
             loadRecordings()
+        }
+    }
+
+    // ---- AI Intelligence (Phase 3) ----
+
+    fun requestTranscription(recording: RecordingItem) {
+        val path = recording.file.absolutePath
+        if (_aiProcessing.value.contains(path)) return
+        if (!_aiOptIn.value) {
+            _operationError.value = "فعّل ميزات الذكاء الاصطناعي من الشريط العلوي أولاً"
+            return
+        }
+        // Return cached if exists and show it
+        _transcripts.value[path]?.let {
+            _selectedTranscript.value = it
+            _operationError.value = "النسخ موجود مسبقاً: ${it.titleSuggestion.take(30)}"
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _aiProcessing.update { it + path }
+            try {
+                val transcript = gemini.transcribe(recording.file)
+                val summary = gemini.summarize(transcript)
+                val actionsList = gemini.extractActionItems(transcript)
+                val actionItemsStr = if (actionsList.isEmpty()) "" else actionsList.joinToString("\n")
+                val title = gemini.suggestTitle(transcript.ifBlank { recording.name })
+                val entity = TranscriptEntity(
+                    filePath = path,
+                    transcript = transcript,
+                    summary = summary,
+                    actionItems = actionItemsStr,
+                    titleSuggestion = title
+                )
+                transcriptDao.insert(entity)
+                withContext(Dispatchers.Main) {
+                    _selectedTranscript.value = entity
+                    _operationError.value = "تم النسخ والتلخيص: $title"
+                }
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "requestTranscription failed", e)
+                _operationError.value = "تعذر النسخ — ${e.message?.take(60)}"
+            } finally {
+                _aiProcessing.update { it - path }
+            }
+        }
+    }
+
+    fun deleteTranscript(path: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try { transcriptDao.deleteByPath(path) } catch (_: Exception) {}
+            if (_selectedTranscript.value?.filePath == path) _selectedTranscript.value = null
         }
     }
 

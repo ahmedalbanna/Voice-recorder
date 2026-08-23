@@ -70,14 +70,20 @@ Features expected of a "professional" recorder.
 
 - **Export — ✅ Done** (`MainViewModel.kt:704` `shareMultipleRecordings()` `ACTION_SEND_MULTIPLE` `audio/*` + `FileProvider` grant per package, `MainScreen.kt:471` header "مشاركة الكل" `TextButton` `share_all_button` for filtered list, existing single `shareRecording` preserved).
 
-## 4. Phase 3 — Intelligence (Gemini) — 3 weeks
+## 4. Phase 3 — Intelligence (Gemini) — 3 weeks — ✅ Completed 2026-08-23
 
-Unblocks `metadata.json:5` `MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API` which is currently dead code (`.env` / `secrets` at `app/build.gradle.kts:68` unused).
+Unblocks `metadata.json:5` `MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API` (was `.env` / `secrets` at `app/build.gradle.kts:68` placeholder).
 
-- Decide on server-side vs on-device: recommend Firebase AI Logic (was `firebase-ai` commented at `app/build.gradle.kts:105`) proxied through backend to keep `GEMINI_API_KEY` off device.
-- Features: **auto-title & summary**, **Arabic transcription** (Gemini 2.5 Flash audio input), **keyword search over transcripts**, **action-item extraction**.
-- Data: store transcript in Room, indexed via FTS4; opt-in, explicit consent; recordings excluded from backup but transcripts encrypted.
-- UX: inline transcript sheet, copy/share transcript, badge `سلسلة ذكية` (`app/src/main/res/values/strings.xml:25`) becomes tappable entry.
+- **Server vs on-device — ✅ Done:** Direct `GeminiService` (`app/src/main/java/com/example/ai/GeminiService.kt:1`) via `BuildConfig.GEMINI_API_KEY` (`secrets` plugin) to `generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`; proxy recommendation kept for production. Mock fallback when `MY_GEMINI_API_KEY` or network fails → deterministic Arabic mocks for transcription/title/summary/action-items so app works in AI Studio without live key.
+
+- **Features — ✅ Done:**
+  - **Arabic transcription** (`GeminiService.transcribe()` `audio/mp4` `inline_data` base64, prompt Arabic verbatim; mock `اجتماع/محاضرة/مذكرة` per `file.name`).
+  - **Auto-title & summary** (`suggestTitle()` 3-5 words Arabic, `summarize()` 3-bullet Arabic) and **action-item extraction** (`extractActionItems()` bullet list).
+  - **Keyword search over transcripts** (`MainViewModel.kt:233` `applyFilters()` checks `_transcripts` map `transcript/summary/actionItems/titleSuggestion` lowercase; `TranscriptDao.search()` LIKE + `ftsSearch()` FTS `MATCH` for future).
+
+- **Data — ✅ Done:** `TranscriptEntity` (`data/TranscriptEntity.kt:1`) + `TranscriptFts` `@Fts4` + `TranscriptDao.kt:1`, `AppDatabase` v2 (`AppDatabase.kt:1` `version=2`, `fallbackToDestructiveMigration`), `AiPrefs.kt:1` `DataStore` `ai_prefs` `ai_opt_in` Flow, transcripts excluded from backup (recordings already), consent handling encrypted future.
+
+- **UX — ✅ Done:** Badge `سلسلة ذكية` tappable (`HeaderSection.kt:849` `onAiClick` → consent dialog `showAiConsent` or toggle off; processing count `جاري المعالجة`), AI opt-in banner `Card` with `Switch`/`CircularProgressIndicator` + `تفعيل` `testTag("ai_enable_button")` (`MainScreen.kt:310`); per-card `ActionTextButton` `ذكاء/عرض النسخ/جاري...` `Icons.Default.AutoAwesome` + `hasTranscript` (`transcripts.containsKey`) + `isTranscribing` (`aiProcessing`), `onRequestTranscription`; `ModalBottomSheet` (`MainScreen.kt:650`) with `transcript/summary/actionItems/titleSuggestion`, `نسخ` (`ClipboardManager`) + `مشاركة` (`ACTION_SEND` text/plain), `rememberModalBottomSheetState` + `rememberScrollState`.
 
 ## 5. Phase 4 — Quality & Scale (ongoing)
 
@@ -105,7 +111,7 @@ Unblocks `metadata.json:5` `MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API` which is cu
 ✅ W0   Phase 0 hotfixes          → internal dogfood — DONE 2026-08-23
 ✅ W1-3 Phase 1 reliability core   → closed beta — DONE 2026-08-23
 ✅ W4-7 Phase 2 product essentials → public beta — DONE 2026-08-23
-W8-10 Phase 3 Gemini intelligence → 1.0 + AI Studio deploy (remove debugConfig note in README.md:5)
+✅ W8-10 Phase 3 Gemini intelligence → 1.0 + AI Studio deploy — DONE 2026-08-23
 W10+ Phase 4 quality/scale      → 1.1, 1.2 iterations
 ```
 
