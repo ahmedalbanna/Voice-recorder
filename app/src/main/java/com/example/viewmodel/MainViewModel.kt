@@ -4,9 +4,6 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.media.MediaMetadataRetriever
-import android.net.Uri
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -78,6 +75,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Temp file used for active recording
     private var activeRecordingFile: File? = null
+
+    // Operation feedback for UI (Snackbar) — null when idle
+    private val _operationError = MutableStateFlow<String?>(null)
+    val operationError: StateFlow<String?> = _operationError.asStateFlow()
+
+    fun consumeOperationError() {
+        _operationError.value = null
+    }
 
     init {
         loadRecordings()
@@ -305,21 +310,64 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             try {
                 if (recording.file.exists()) {
-                    recording.file.delete()
+                    val deleted = recording.file.delete()
+                    if (!deleted) {
+                        Log.e("MainViewModel", "Failed to delete file: ${recording.file.name} — delete() returned false")
+                        _operationError.value = "تعذر حذف التسجيل"
+                    }
+                } else {
+                    _operationError.value = "الملف غير موجود"
                 }
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Failed to delete file", e)
+                _operationError.value = "تعذر حذف التسجيل"
             }
             loadRecordings()
         }
     }
 
+    /**
+     * Sanitizes a user-provided file name (without extension).
+     * Allows Arabic/Unicode letters, digits, space, underscore, hyphen.
+     * Rejects path separators, traversal, and over-long names.
+     * Returns null if invalid.
+     */
+    private fun sanitizeFileName(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty() || trimmed.length > 64) return null
+        if (trimmed.contains('/') || trimmed.contains('\\') || trimmed.contains('\u0000')) return null
+        if (trimmed == "." || trimmed == "..") return null
+        if (trimmed.endsWith(".") || trimmed.endsWith(" ")) return null
+        // Unicode letters + digits + space, _ , -
+        val regex = Regex("^[\\p{L}0-9 _-]+$")
+        if (!regex.matches(trimmed)) return null
+        return trimmed
+    }
+
+    private fun resolveUniqueDestination(baseName: String, extension: String): File {
+        var candidate = File(recordingsDir, "$baseName.$extension")
+        var counter = 1
+        while (candidate.exists() && counter < 100) {
+            candidate = File(recordingsDir, "${baseName}_$counter.$extension")
+            counter++
+        }
+        return candidate
+    }
+
     fun renameRecording(recording: RecordingItem, newName: String) {
-        if (newName.isBlank()) return
+        val sanitized = sanitizeFileName(newName)
+        if (sanitized == null) {
+            Log.w("MainViewModel", "Rejected invalid rename: '$newName'")
+            _operationError.value = "اسم غير صالح — استخدم أحرف/أرقام و _ - فقط (حتى 64 حرف)"
+            return
+        }
+        // No-op if same name
+        if (sanitized == recording.file.nameWithoutExtension) return
+
         viewModelScope.launch(Dispatchers.IO) {
             val extension = recording.file.extension
-            val destFile = File(recordingsDir, "$newName.$extension")
-            
+            val destFile = resolveUniqueDestination(sanitized, extension)
+
             // Check if playing
             val isPlayingThis = _currentlyPlayingFile.value == recording.file
             if (isPlayingThis) {
@@ -329,11 +377,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             try {
-                if (recording.file.exists() && !destFile.exists()) {
-                    recording.file.renameTo(destFile)
+                if (!recording.file.exists()) {
+                    _operationError.value = "الملف غير موجود"
+                } else {
+                    val success = recording.file.renameTo(destFile)
+                    if (!success) {
+                        Log.e("MainViewModel", "renameTo failed: ${recording.file.name} -> ${destFile.name}")
+                        _operationError.value = "تعذر إعادة التسمية"
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Failed to rename file", e)
+                _operationError.value = "تعذر إعادة التسمية"
             }
             loadRecordings()
         }

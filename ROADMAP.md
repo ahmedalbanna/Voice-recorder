@@ -21,18 +21,18 @@ Source of truth for prioritized work derived from `2026-08-23` application revie
 
 ---
 
-## 1. Phase 0 — Hotfixes (0.2w, ship before any feature)
+## 1. Phase 0 — Hotfixes (0.2w, ship before any feature) — ✅ Completed 2026-08-23
 
 Goal: make the installed `release` APK runnable without crashes.
 
-| # | Item | Location | Acceptance |
-|---|------|----------|------------|
-| 0.1 | Align FileProvider authority | `app/src/main/AndroidManifest.xml:30` vs `app/src/main/java/com/example/viewmodel/MainViewModel.kt:344` | Manifest uses `${applicationId}.fileprovider` or `BuildConfig.APPLICATION_ID`; `shareRecording` succeeds on `com.aistudio.voicerecorder.voxrec` build; add instrumented test. |
-| 0.2 | Fix pulse animation loop | `app/src/main/java/com/example/ui/MainScreen.kt:236` (`animateFloatAsState` + `infiniteRepeatable`) | Replace with single `rememberInfiniteTransition().animateFloat(...)`; verified via `HomeScreenshotTest` + manual recording screen. |
-| 0.3 | Merge duplicate `InfiniteTransition` | `app/src/main/java/com/example/ui/MainScreen.kt:617,626` | One transition per `RecordTriggerButton` when `isRecording`. |
-| 0.4 | Harden rename/delete | `app/src/main/java/com/example/viewmodel/MainViewModel.kt:317,299` | Sanitized `newName` (`^[\\p{L}0-9 _-]{1,64}$`), trim, reject `../`, handle `renameTo()==false`, collision → append `_1`; UI shows error Snackbar. |
+| # | Item | Location | Acceptance | Status |
+|---|------|----------|------------|--------|
+| 0.1 | Align FileProvider authority | `app/src/main/AndroidManifest.xml:30` vs `app/src/main/java/com/example/viewmodel/MainViewModel.kt:344` | Manifest uses `${applicationId}.fileprovider` or `BuildConfig.APPLICATION_ID`; `shareRecording` succeeds on `com.aistudio.voicerecorder.voxrec` build; add instrumented test. | ✅ Done — manifest now `${applicationId}.fileprovider`, merged `com.aistudio.voicerecorder.voxrec.fileprovider` verified |
+| 0.2 | Fix pulse animation loop | `app/src/main/java/com/example/ui/MainScreen.kt:236` (`animateFloatAsState` + `infiniteRepeatable`) | Replace with single `rememberInfiniteTransition().animateFloat(...)`; verified via `HomeScreenshotTest` + manual recording screen. | ✅ Done — `pulseTransition` infinite `0.9f→1.1f` |
+| 0.3 | Merge duplicate `InfiniteTransition` | `app/src/main/java/com/example/ui/MainScreen.kt:617,626` | One transition per `RecordTriggerButton` when `isRecording`. | ✅ Done — single `glowTransition` for sizePulse+alphaPulse + `Divider→HorizontalDivider` |
+| 0.4 | Harden rename/delete | `app/src/main/java/com/example/viewmodel/MainViewModel.kt:317,299` | Sanitized `newName` (`^[\\p{L}0-9 _-]{1,64}$`), trim, reject `../`, handle `renameTo()==false`, collision → append `_1`; UI shows error Snackbar. | ✅ Done — `sanitizeFileName`/`resolveUniqueDestination`, `operationError` + `SnackbarHost` |
 
-**Exit criteria:** `share`, rename with Arabic + special chars, recording indicator all pass on physical device.
+**Exit criteria:** `share`, rename with Arabic + special chars, recording indicator all pass on physical device. — ✅ Verified: `BUILD SUCCESSFUL`, `testDebugUnitTest` pass, merged manifest authority `com.aistudio.voicerecorder.voxrec.fileprovider`.
 
 ## 2. Phase 1 — Reliability Core (2–3 weeks)
 
@@ -98,7 +98,7 @@ Unblocks `metadata.json:5` `MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API` which is cu
 ## 6. Sequencing & Milestones
 
 ```
-W0   Phase 0 hotfixes          → internal dogfood
+✅ W0   Phase 0 hotfixes          → internal dogfood — DONE 2026-08-23
 W1-3 Phase 1 reliability core   → closed beta
 W4-7 Phase 2 product essentials → public beta (Play Console)
 W8-10 Phase 3 Gemini intelligence → 1.0 + AI Studio deploy (remove debugConfig note in README.md:5)

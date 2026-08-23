@@ -76,6 +76,7 @@ fun MainScreen(
     val isRecording by viewModel.isRecording.collectAsState()
     val recordingDurationSeconds by viewModel.recordingDurationSeconds.collectAsState()
     val amplitudes by viewModel.amplitudes.collectAsState()
+    val operationError by viewModel.operationError.collectAsState()
 
     // Dynamic Permission requesting status
     var hasMicPermission by remember {
@@ -103,6 +104,8 @@ fun MainScreen(
             amplitudes = amplitudes
         ),
         modifier = modifier,
+        operationError = operationError,
+        onConsumeError = { viewModel.consumeOperationError() },
         onRequestPermission = {
             launcher.launch(Manifest.permission.RECORD_AUDIO)
         },
@@ -130,6 +133,8 @@ fun MainScreen(
 fun MainScreenContent(
     uiState: MainUiState,
     modifier: Modifier = Modifier,
+    operationError: String? = null,
+    onConsumeError: () -> Unit = {},
     onRequestPermission: () -> Unit = {},
     onRecordToggle: () -> Unit = {},
     onPlayToggle: (RecordingItem) -> Unit = {},
@@ -139,11 +144,19 @@ fun MainScreenContent(
     onShare: (RecordingItem) -> Unit = {}
 ) {
     val colors = LocalAppColors.current
+    val snackbarHostState = remember { SnackbarHostState() }
 
     // Dialog holding states
     var recordingToDelete by remember { mutableStateOf<RecordingItem?>(null) }
     var recordingToRename by remember { mutableStateOf<RecordingItem?>(null) }
     var renameInputText by remember { mutableStateOf("") }
+
+    LaunchedEffect(operationError) {
+        if (operationError != null) {
+            snackbarHostState.showSnackbar(operationError)
+            onConsumeError()
+        }
+    }
 
     // Force RTL for the layout representing Arabic engineering guidelines
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
@@ -152,6 +165,7 @@ fun MainScreenContent(
                 .fillMaxSize()
                 .background(colors.background),
             containerColor = colors.background,
+            snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             topBar = {
                 HeaderSection()
             }
@@ -233,8 +247,10 @@ fun MainScreenContent(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.Center
                                 ) {
-                                    val pulseScale by animateFloatAsState(
-                                        targetValue = if (uiState.recordingDurationSeconds % 2 == 0) 1.1f else 0.9f,
+                                    val pulseTransition = rememberInfiniteTransition(label = "pulseTransition")
+                                    val pulseScale by pulseTransition.animateFloat(
+                                        initialValue = 0.9f,
+                                        targetValue = 1.1f,
                                         animationSpec = infiniteRepeatable(
                                             animation = tween(500, easing = LinearEasing),
                                             repeatMode = RepeatMode.Reverse
@@ -612,9 +628,10 @@ fun RecordTriggerButton(
             )
             .scale(scale)
     ) {
-        // Outer glowing pulse ring
+        // Outer glowing pulse ring — single InfiniteTransition merged (0.3)
         if (isRecording) {
-            val pulseGlowVal by rememberInfiniteTransition(label = "").animateFloat(
+            val glowTransition = rememberInfiniteTransition(label = "glowTransition")
+            val pulseGlowVal by glowTransition.animateFloat(
                 initialValue = 135.dp.value,
                 targetValue = 175.dp.value,
                 animationSpec = infiniteRepeatable(
@@ -623,7 +640,7 @@ fun RecordTriggerButton(
                 ),
                 label = "sizePulse"
             )
-            val alphaVal by rememberInfiniteTransition(label = "").animateFloat(
+            val alphaVal by glowTransition.animateFloat(
                 initialValue = 1f,
                 targetValue = 0f,
                 animationSpec = infiniteRepeatable(
@@ -848,7 +865,7 @@ fun RecordingItemCard(
             Spacer(modifier = Modifier.height(12.dp))
 
             // Footer Quick actions line representing sharing and renaming features
-            Divider(color = colors.cardBorder.copy(alpha = 0.5f), thickness = 1.dp)
+            HorizontalDivider(color = colors.cardBorder.copy(alpha = 0.5f), thickness = 1.dp)
 
             Spacer(modifier = Modifier.height(8.dp))
 
