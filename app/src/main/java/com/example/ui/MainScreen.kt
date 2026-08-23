@@ -42,6 +42,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -282,8 +285,8 @@ fun MainScreenContent(
         }
     }
 
-    // Conditional RTL: only force RTL for Arabic locales (Phase 1.2), else respect system LTR for en/
-    val isRtl = remember { Locale.getDefault().language in setOf("ar", "fa", "he", "ur") }
+    // Conditional RTL: only force RTL for Arabic locales (Phase 1.2), else respect system LTR for en/ — no stale remember (Phase 4 a11y)
+    val isRtl = Locale.getDefault().language in setOf("ar", "fa", "he", "ur")
     val layoutDirection = if (isRtl) LayoutDirection.Rtl else LayoutDirection.Ltr
     CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
         Scaffold(
@@ -433,7 +436,9 @@ fun MainScreenContent(
                                         fontFeatureSettings = "tnum",
                                         letterSpacing = 2.sp
                                     ),
-                                    modifier = Modifier.testTag("timer_label")
+                                    modifier = Modifier
+                                        .semantics { contentDescription = "مؤقت التسجيل ${formatSeconds(uiState.recordingDurationSeconds)}" }
+                                        .testTag("timer_label")
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Row(
@@ -584,7 +589,9 @@ fun MainScreenContent(
                                 fontSize = 18.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = colors.textPrimary,
-                                modifier = Modifier.padding(start = 4.dp)
+                                modifier = Modifier
+                                    .semantics { heading() }
+                                    .padding(start = 4.dp)
                             )
                             if (uiState.recordings.isNotEmpty()) {
                                 TextButton(
@@ -1228,14 +1235,19 @@ fun RecordTriggerButton(
     }
 }
 
-// Waveform visualizer Canvas element scanning max Amplitudes
+// Waveform visualizer Canvas element scanning max Amplitudes — Brush cached per frame (Phase 4)
 @Composable
 fun WaveformVisualizer(amplitudes: List<Float>) {
     val colors = LocalAppColors.current
+    // Cache brush across recompositions (Phase 4 perf)
+    val waveformBrush = remember(colors.recordingRed, colors.playbackGold) {
+        Brush.verticalGradient(colors = listOf(colors.recordingRed, colors.playbackGold))
+    }
     Canvas(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp, vertical = 24.dp)
+            .semantics { contentDescription = "مخطط الموجة الصوتية" }
     ) {
         val width = size.width
         val height = size.height
@@ -1342,14 +1354,15 @@ fun RecordingItemCard(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Circular Play action button
+                // Circular Play action button — stable tag via file hash (Phase 4)
                 Box(
                     modifier = Modifier
                         .size(46.dp)
                         .clip(CircleShape)
                         .background(if (item.isPlaying) colors.recordingRedGlow else colors.cardBorder)
                         .clickable(onClick = onPlayToggle)
-                        .testTag("play_pause_button_${item.name}"),
+                        .semantics { contentDescription = if (item.isPlaying) "إيقاف" else "تشغيل" }
+                        .testTag("play_pause_${item.file.absolutePath.hashCode()}"),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -1443,6 +1456,7 @@ fun RecordingItemCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(18.dp)
+                            .semantics { contentDescription = "شريط تقدم التشغيل" }
                     )
                 }
             }
@@ -1470,13 +1484,13 @@ fun RecordingItemCard(
                         icon = Icons.Default.Edit,
                         label = stringResource(id = R.string.rename_btn_desc),
                         onClick = onRenameRequest,
-                        tag = "rename_button_${item.name}"
+                        tag = "rename_${item.file.absolutePath.hashCode()}"
                     )
                     ActionTextButton(
                         icon = Icons.Default.ContentCut,
                         label = "قص",
                         onClick = onTrimRequest,
-                        tag = "trim_button_${item.name}"
+                        tag = "trim_${item.file.absolutePath.hashCode()}"
                     )
                     ActionTextButton(
                         icon = if (hasTranscript) Icons.Default.Description else Icons.Default.AutoAwesome,
@@ -1487,7 +1501,7 @@ fun RecordingItemCard(
                             isTranscribing -> colors.textHint
                             else -> colors.playbackGold
                         },
-                        tag = "ai_button_${item.name}"
+                        tag = "ai_${item.file.absolutePath.hashCode()}"
                     )
                 }
 
@@ -1496,7 +1510,7 @@ fun RecordingItemCard(
                     label = stringResource(id = R.string.delete_btn_desc),
                     onClick = onDeleteRequest,
                     color = colors.recordingRed.copy(alpha = 0.85f),
-                    tag = "delete_button_${item.name}"
+                    tag = "delete_${item.file.absolutePath.hashCode()}"
                 )
             }
         }

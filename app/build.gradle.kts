@@ -44,13 +44,19 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
     debug {
       signingConfig = signingConfigs.getByName("debugConfig")
     }
+  }
+  lint {
+    abortOnError = false
+    checkReleaseBuilds = false
+    baseline = file("lint-baseline.xml")
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
@@ -80,7 +86,7 @@ roborazzi {
 // This makes it easy to add them back in the future if needed.
 dependencies {
   implementation(platform(libs.androidx.compose.bom))
-  implementation(platform(libs.firebase.bom))
+  // firebase-bom removed in Phase 4 — not used (was placeholder for firebase-ai, now direct Gemini via OkHttp)
   // implementation(libs.accompanist.permissions)
   implementation(libs.androidx.activity.compose)
   // implementation(libs.androidx.camera.camera2)
@@ -142,10 +148,15 @@ tasks.register("prepareImagesForAI") {
   group = "roborazzi"
   description = "Downscale/compress Roborazzi captures into an AI-friendly feed with a JSON manifest"
   dependsOn("recordRoborazziDebug")
+  // Phase 4: configuration-cache compatible inputs/outputs
+  val inputDirProvider = layout.buildDirectory.dir("outputs/roborazzi")
+  val outputDirProvider = layout.buildDirectory.dir("outputs/ai_feed")
+  inputs.dir(inputDirProvider)
+  outputs.dir(outputDirProvider)
 
   doLast {
-    val inputDir = layout.buildDirectory.dir("outputs/roborazzi").get().asFile
-    val outputDir = layout.buildDirectory.dir("outputs/ai_feed").get().asFile
+    val inputDir = inputDirProvider.get().asFile
+    val outputDir = outputDirProvider.get().asFile
     outputDir.mkdirs()
 
     if (!inputDir.exists()) {

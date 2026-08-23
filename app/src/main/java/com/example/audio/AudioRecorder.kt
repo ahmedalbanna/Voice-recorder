@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.MediaRecorder
 import android.os.Build
 import android.util.Log
+import com.example.analytics.AnalyticsHelper
 import java.io.File
 
 class AudioRecorder(private val context: Context) {
@@ -27,6 +28,13 @@ class AudioRecorder(private val context: Context) {
                 setOutputFile(outputFile.absolutePath)
                 setAudioEncodingBitRate(128000)
                 setAudioSamplingRate(44100)
+                setOnErrorListener { _, what, extra ->
+                    AnalyticsHelper.logRecordingError(what, "MediaRecorder error what=$what extra=$extra")
+                    Log.e("AudioRecorder", "MediaRecorder error what=$what extra=$extra")
+                }
+                setOnInfoListener { _, what, extra ->
+                    Log.i("AudioRecorder", "MediaRecorder info what=$what extra=$extra")
+                }
                 prepare()
                 start()
             }

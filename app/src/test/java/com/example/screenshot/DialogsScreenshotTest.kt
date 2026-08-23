@@ -38,7 +38,7 @@ class DialogsScreenshotTest : ScreenshotTestBase() {
     @Test
     fun renameDialog_phone_dark_ar() {
         openDialogAndCapture(
-            buttonTag = "rename_button_${item.name}",
+            buttonTag = "rename_${item.file.absolutePath.hashCode()}",
             fileName = "dialogs/dialog-rename-phone-dark-ar.png"
         )
     }
@@ -46,7 +46,7 @@ class DialogsScreenshotTest : ScreenshotTestBase() {
     @Test
     fun deleteDialog_phone_dark_ar() {
         openDialogAndCapture(
-            buttonTag = "delete_button_${item.name}",
+            buttonTag = "delete_${item.file.absolutePath.hashCode()}",
             fileName = "dialogs/dialog-delete-phone-dark-ar.png"
         )
     }

@@ -61,4 +61,21 @@ class HomeScreenshotTest : ScreenshotTestBase() {
     fun homeRecordingActive_phone_dark_ar() {
         capture("home/home-recording-phone-dark-ar.png", darkTheme = true, home(recordingState))
     }
+
+    @Test
+    fun homeRecordingActive_phone_light_ar() {
+        capture("home/home-recording-phone-light-ar.png", darkTheme = false, home(recordingState))
+    }
+
+    @Test
+    @Config(sdk = [36], qualifiers = "en-w412dp-h915dp-420dpi")
+    fun homeRecordingActive_phone_dark_en() {
+        capture("home/home-recording-phone-dark-en.png", darkTheme = true, home(recordingState))
+    }
+
+    @Test
+    fun homePaused_phone_dark_ar() {
+        val paused = recordingState.copy(isPaused = true)
+        capture("home/home-paused-phone-dark-ar.png", darkTheme = true, home(paused))
+    }
 }

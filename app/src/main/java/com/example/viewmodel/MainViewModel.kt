@@ -16,6 +16,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.GeminiService
+import com.example.analytics.AnalyticsHelper
 import com.example.audio.AudioPlayer
 import com.example.audio.AudioRecorder
 import com.example.data.AiPrefs
@@ -471,6 +472,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _recordingDurationSeconds.value = 0
             _amplitudes.value = emptyList()
             recordingStartElapsedMs = SystemClock.elapsedRealtime()
+            AnalyticsHelper.logRecordingStarted()
 
             // Foreground service to survive backgrounding (1.1)
             try {
@@ -527,6 +529,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         } else {
+            AnalyticsHelper.logRecordingStopped(0, success = false)
+            AnalyticsHelper.logRecordingError(-1, "start() returned false for ${file.name}")
             abandonAudioFocus()
         }
     }
@@ -563,6 +567,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun stopRecording() {
         if (!_isRecording.value) return
 
+        val durationAtStop = _recordingDurationSeconds.value
         audioRecorder.stop()
         _isRecording.value = false
         _isPaused.value = false
@@ -581,6 +586,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Log.w("MainViewModel", "Failed to stop RecordingService", e)
         }
         abandonAudioFocus()
+        AnalyticsHelper.logRecordingStopped(durationAtStop, success = true)
 
         val justRecordedFile = activeRecordingFile
         activeRecordingFile = null
@@ -655,11 +661,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             if (success) {
                 startPlaybackProgressTimer()
+                AnalyticsHelper.logPlaybackStarted(recording.durationMs)
                 try { PlaybackNotificationHelper.show(context, recording.name, isPlaying = true) } catch (_: Exception) {}
             } else {
                 _isPlaying.value = false
                 _currentlyPlayingFile.value = null
                 abandonAudioFocus()
+                AnalyticsHelper.logPlaybackError("play failed for ${recording.file.name}")
                 try { PlaybackNotificationHelper.hide(context) } catch (_: Exception) {}
             }
         }
@@ -992,6 +1000,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch(Dispatchers.IO) {
             _aiProcessing.update { it + path }
+            val startMs = SystemClock.elapsedRealtime()
             try {
                 val transcript = gemini.transcribe(recording.file)
                 val summary = gemini.summarize(transcript)
@@ -1006,12 +1015,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     titleSuggestion = title
                 )
                 transcriptDao.insert(entity)
+                AnalyticsHelper.logAiTranscription(SystemClock.elapsedRealtime() - startMs, success = true)
                 withContext(Dispatchers.Main) {
                     _selectedTranscript.value = entity
                     _operationError.value = "تم النسخ والتلخيص: $title"
                 }
             } catch (e: Exception) {
                 Log.e("MainViewModel", "requestTranscription failed", e)
+                AnalyticsHelper.logAiTranscription(SystemClock.elapsedRealtime() - startMs, success = false)
                 _operationError.value = "تعذر النسخ — ${e.message?.take(60)}"
             } finally {
                 _aiProcessing.update { it - path }
